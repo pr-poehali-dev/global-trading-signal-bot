@@ -297,15 +297,6 @@ def auto_run():
             results["skipped_target"] += 1
             continue
 
-        max_daily_loss = balance * trade_cfg["max_daily_loss"]
-        if daily_pnl < -max_daily_loss:
-            send_telegram(
-                f"⚠️ <b>{exchange}: дневной лимит убытков достигнут</b>\n"
-                f"Убыток за день: ${daily_pnl:.2f} (лимит: -${max_daily_loss:.2f})\n"
-                f"Бот приостановлен до завтра для защиты баланса."
-            )
-            continue
-
         for sig in active_signals:
             if sig.get("confidence", 0) < trade_cfg["min_conf"]:
                 continue
