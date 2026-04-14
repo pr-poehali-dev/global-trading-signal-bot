@@ -53,6 +53,25 @@ body {
   overflow: hidden;
 }
 
+@media (max-width: 767px) {
+  body {
+    overflow: auto;
+    font-size: 12px;
+  }
+}
+
+.mobile-table-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.mobile-table-row:last-child {
+  border-bottom: none;
+}
+
 ::-webkit-scrollbar {
   width: 4px;
   height: 4px;
