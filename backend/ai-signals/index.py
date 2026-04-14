@@ -23,10 +23,8 @@ SCHEMA = "t_p73206386_global_trading_signa"
 
 PAIRS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
-    "MATICUSDT", "LTCUSDT", "ATOMUSDT", "NEARUSDT", "APTUSDT",
-    "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT", "SEIUSDT",
-    "TIAUSDT", "WLDUSDT", "FETUSDT", "RENDERUSDT", "1000SHIBUSDT",
+    "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "INJUSDT", "SUIUSDT",
+    "ARBUSDT", "FETUSDT",
 ]
 
 EXCHANGES = {
@@ -95,7 +93,7 @@ MIN_CONFIDENCE = 90
 def fetch_url(url: str):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "TradingBot/3.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=6) as r:
             return json.loads(r.read().decode())
     except Exception:
         return None
@@ -373,9 +371,9 @@ def score_signal(rsi_1h, rsi_4h, rsi_1d, macd, bb, stoch, trend, vol, fg, diverg
     }
 
 def generate_signal(sym: str, fg: dict) -> dict | None:
-    c1h = get_candles(sym, "1h", 100)
-    c4h = get_candles(sym, "4h", 60)
-    c1d = get_candles(sym, "1d", 50)
+    c1h = get_candles(sym, "1h", 80)
+    c4h = get_candles(sym, "4h", 40)
+    c1d = get_candles(sym, "1d", 30)
     if not c1h or len(c1h) < 50:
         return None
 
