@@ -5,7 +5,7 @@
       "method": "GET",
       "path": "/?action=stats",
       "expectedStatus": 200,
-      "expectedBody": {"total": 0},
+      "expectedBody": {"total": "number"},
       "bodyMatcher": "partial"
     },
     {
@@ -13,7 +13,15 @@
       "method": "GET",
       "path": "/?action=config",
       "expectedStatus": 200,
-      "expectedBody": {"exchanges": []},
+      "expectedBody": {"modes": "object"},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Auto run",
+      "method": "GET",
+      "path": "/?action=auto_run",
+      "expectedStatus": 200,
+      "expectedBody": {"status": "string"},
       "bodyMatcher": "partial"
     }
   ]

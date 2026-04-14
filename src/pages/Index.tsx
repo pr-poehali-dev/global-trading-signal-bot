@@ -1107,8 +1107,45 @@ function AutoTradeSection({ signals }: { signals: SignalsState }) {
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold">Авто-Торговля</span>
         <div className="flex items-center gap-2">
+          {botStats?.today_pnl > 0 && <span className="text-xs badge-bull px-2 py-0.5 rounded font-mono">+${botStats.today_pnl} сегодня</span>}
           <span className="text-xs badge-bear px-2 py-0.5 rounded font-mono">⚠ Реальные деньги</span>
         </div>
+      </div>
+
+      {/* Auto-run banner */}
+      <div className="panel rounded p-4 border border-primary/20" style={{ background: "linear-gradient(135deg, hsl(220 13% 9%), hsl(217 91% 60% / 0.05))" }}>
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Автономный режим</div>
+            <div className="text-sm">Бот сам анализирует рынок, открывает и закрывает сделки, отчитывается в Telegram</div>
+          </div>
+          <button
+            onClick={async () => {
+              setTrading("auto");
+              try {
+                const res = await fetch(`${API_TRADE}?action=auto_run`).then(r => r.json());
+                setLastResult({ ...res, ts: new Date().toLocaleTimeString("ru-RU"), auto: true });
+                fetch(`${API_TRADE}?action=stats`).then(r => r.json()).then(setBotStats);
+              } finally { setTrading(null); }
+            }}
+            disabled={!!trading}
+            className="px-4 py-2 rounded bg-primary text-primary-foreground font-mono text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-2">
+            {trading === "auto" ? (
+              <><div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" /> Анализ...</>
+            ) : (
+              <><Icon name="Zap" size={14} /> Запустить цикл</>
+            )}
+          </button>
+        </div>
+        {lastResult?.auto && (
+          <div className="mt-3 pt-3 border-t border-border text-xs font-mono text-muted-foreground flex flex-wrap gap-3">
+            <span>Проверено сигналов: {lastResult.checked || 0}</span>
+            <span className="bull">Открыто сделок: {lastResult.opened || 0}</span>
+            <span>Закрыто: {lastResult.closed || 0}</span>
+            {lastResult.skipped_target > 0 && <span className="gold">План выполнен: {lastResult.skipped_target} биржи</span>}
+            <span className="text-muted-foreground">@ {lastResult.ts}</span>
+          </div>
+        )}
       </div>
 
       {/* Warning */}
@@ -1116,9 +1153,8 @@ function AutoTradeSection({ signals }: { signals: SignalsState }) {
         <div className="flex items-start gap-2">
           <Icon name="AlertTriangle" size={14} className="text-amber-500 shrink-0 mt-0.5" />
           <div className="text-xs text-muted-foreground">
-            <strong className="text-amber-500">Внимание:</strong> бот торгует реальными деньгами на ваши API ключи.
-            Добавьте ключи в раздел Секреты. Рекомендуем начать с режима <strong className="text-foreground">MEDIUM</strong> и небольшого депозита.
-            Бот торгует только по сигналам 90%+.
+            <strong className="text-amber-500">Автономный бот:</strong> торгует реальными деньгами. Цель HARD: <strong className="text-foreground">+15% в день</strong>.
+            При достижении плана — останавливается до завтра. При убытке &gt;5% — автостоп. Уведомления в Telegram.
           </div>
         </div>
       </div>
