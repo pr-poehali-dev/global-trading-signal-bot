@@ -1,0 +1,20 @@
+{
+  "tests": [
+    {
+      "name": "Get all pairs",
+      "method": "GET",
+      "path": "/?action=all",
+      "expectedStatus": 200,
+      "expectedBody": {"pairs": []},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Get indicators for BTC",
+      "method": "GET",
+      "path": "/?action=indicators&symbol=BTCUSDT",
+      "expectedStatus": 200,
+      "expectedBody": {"symbol": "BTCUSDT"},
+      "bodyMatcher": "partial"
+    }
+  ]
+}

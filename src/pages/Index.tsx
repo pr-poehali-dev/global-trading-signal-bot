@@ -1,239 +1,352 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Icon from "@/components/ui/icon";
 
-// ─── Mock Data ───────────────────────────────────────────────────────────────
+const API_MARKET = "https://functions.poehali.dev/b4830b16-e61f-4ab5-8a8b-eb323709567c";
+const API_SIGNALS = "https://functions.poehali.dev/4b074d99-4dd2-412c-904d-50db2bf5fbed";
 
-const PAIRS = [
-  { symbol: "BTC/USDT", price: 67842.50, change: 2.34, volume: "1.24B" },
-  { symbol: "ETH/USDT", price: 3521.80, change: 1.87, volume: "584M" },
-  { symbol: "SOL/USDT", price: 182.45, change: -0.92, volume: "312M" },
-  { symbol: "BNB/USDT", price: 602.30, change: 0.45, volume: "198M" },
-  { symbol: "XRP/USDT", price: 0.6234, change: -1.23, volume: "412M" },
-  { symbol: "DOGE/USDT", price: 0.1876, change: 3.12, volume: "289M" },
-];
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-const SIGNALS = [
-  { id: 1, pair: "BTC/USDT", type: "LONG", exchange: "Binance", entry: 67200, target: 69800, stop: 65900, confidence: 87, status: "active", time: "14:23" },
-  { id: 2, pair: "ETH/USDT", type: "LONG", exchange: "Bybit", entry: 3480, target: 3720, stop: 3380, confidence: 79, status: "active", time: "14:01" },
-  { id: 3, pair: "SOL/USDT", type: "SHORT", exchange: "OKX", entry: 188, target: 172, stop: 194, confidence: 71, status: "active", time: "13:45" },
-  { id: 4, pair: "BNB/USDT", type: "LONG", exchange: "Binance", entry: 595, target: 625, stop: 582, confidence: 83, status: "waiting", time: "13:12" },
-  { id: 5, pair: "XRP/USDT", type: "SHORT", exchange: "OKX", entry: 0.638, target: 0.598, stop: 0.655, confidence: 68, status: "waiting", time: "12:58" },
-];
-
-const HISTORY = [
-  { id: 1, pair: "BTC/USDT", type: "LONG", entry: 64200, exit: 67100, pnl: 4.51, pnlUSD: 891, exchange: "Binance", date: "14 апр", duration: "3ч 12м" },
-  { id: 2, pair: "ETH/USDT", type: "SHORT", entry: 3650, exit: 3520, pnl: 3.56, pnlUSD: 712, exchange: "Bybit", date: "13 апр", duration: "5ч 40м" },
-  { id: 3, pair: "SOL/USDT", type: "LONG", entry: 192, exit: 184, pnl: -4.17, pnlUSD: -334, exchange: "OKX", date: "13 апр", duration: "2ч 05м" },
-  { id: 4, pair: "BNB/USDT", type: "LONG", entry: 578, exit: 608, pnl: 5.19, pnlUSD: 600, exchange: "Binance", date: "12 апр", duration: "8ч 22м" },
-  { id: 5, pair: "DOGE/USDT", type: "SHORT", entry: 0.198, exit: 0.185, pnl: 6.57, pnlUSD: 394, exchange: "Bybit", date: "12 апр", duration: "1ч 18м" },
-  { id: 6, pair: "XRP/USDT", type: "LONG", entry: 0.598, exit: 0.634, pnl: 6.02, pnlUSD: 482, exchange: "OKX", date: "11 апр", duration: "6ч 54м" },
-  { id: 7, pair: "BTC/USDT", type: "SHORT", entry: 69200, exit: 70100, pnl: -1.30, pnlUSD: -261, exchange: "Binance", date: "11 апр", duration: "4ч 31м" },
-];
-
-const NOTIFICATIONS_DATA = [
-  { id: 1, type: "signal", text: "Новый сигнал LONG на BTC/USDT — уверенность 87%", time: "2 мин назад", read: false },
-  { id: 2, type: "tp", text: "Take Profit достигнут: ETH/USDT +3.56% (+$712)", time: "1ч назад", read: false },
-  { id: 3, type: "signal", text: "Новый сигнал SHORT на SOL/USDT — уверенность 71%", time: "2ч назад", read: false },
-  { id: 4, type: "system", text: "Подключение к Binance восстановлено", time: "3ч назад", read: true },
-  { id: 5, type: "sl", text: "Stop Loss сработал: SOL/USDT -4.17% (-$334)", time: "Вчера", read: true },
-  { id: 6, type: "tp", text: "Take Profit достигнут: BNB/USDT +5.19% (+$600)", time: "Вчера", read: true },
-  { id: 7, type: "system", text: "Bybit API подключён успешно", time: "2 дня назад", read: true },
-];
-
-// ─── Candle Chart ─────────────────────────────────────────────────────────────
-
-function generateCandles(count: number) {
-  let price = 67000;
-  return Array.from({ length: count }, (_, i) => {
-    const dir = Math.random() > 0.45 ? 1 : -1;
-    const body = Math.random() * 600 + 100;
-    const open = price;
-    const close = price + dir * body;
-    const wick = Math.random() * 300;
-    const high = Math.max(open, close) + wick;
-    const low = Math.min(open, close) - Math.random() * 300;
-    price = close;
-    return { open, close, high, low, index: i };
-  });
+interface PairData {
+  symbol: string;
+  raw: string;
+  price: number;
+  change: number;
+  volume: number;
+  high: number;
+  low: number;
+  rsi: number;
+  candles: { time: number; open: number; high: number; low: number; close: number; volume: number }[];
 }
 
-function CandleChart() {
-  const candles = useRef(generateCandles(60));
-  const W = 900, H = 200;
-  const padding = { top: 12, bottom: 20, left: 4, right: 56 };
-  const chartW = W - padding.left - padding.right;
-  const chartH = H - padding.top - padding.bottom;
+interface SignalData {
+  pair: string;
+  type: "LONG" | "SHORT";
+  exchange: string;
+  entry: number;
+  target: number;
+  stop: number;
+  confidence: number;
+  status: string;
+  rsi: number;
+  rsi_4h: number;
+  macd: { macd: number; signal: number; hist: number; trend: string };
+  bollinger: { upper: number; middle: number; lower: number; pct_b: number; squeeze: boolean };
+  trend: { trend: string; strength: number };
+  volume: { ratio: number; trend: string };
+  fear_greed: { value: number; classification: string };
+  divergence: string;
+  factors: string[];
+  analysis: string;
+  risk_reward: number;
+  potential_pct: number;
+  time: string;
+}
 
-  const allPrices = candles.current.flatMap(c => [c.high, c.low]);
+interface MarketState {
+  pairs: PairData[];
+  updatedAt: string;
+  loading: boolean;
+}
+
+interface SignalsState {
+  signals: SignalData[];
+  fearGreed: { value: number; classification: string };
+  loading: boolean;
+  generatedAt: string;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmtPrice(p: number): string {
+  if (p >= 10000) return p.toLocaleString("ru-RU", { maximumFractionDigits: 0 });
+  if (p >= 100) return p.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+  if (p >= 1) return p.toFixed(4);
+  return p.toFixed(6);
+}
+
+function fmtVolume(v: number): string {
+  if (v >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
+  if (v >= 1e6) return `$${(v / 1e6).toFixed(0)}M`;
+  return `$${v.toFixed(0)}`;
+}
+
+function fgColor(val: number): string {
+  if (val <= 25) return "hsl(0 72% 51%)";
+  if (val <= 45) return "hsl(25 95% 55%)";
+  if (val <= 55) return "hsl(43 96% 56%)";
+  if (val <= 75) return "hsl(158 64% 48%)";
+  return "hsl(158 80% 40%)";
+}
+
+// ─── Candle Chart with real data ──────────────────────────────────────────────
+
+function CandleChart({ candles }: { candles: { time: number; open: number; high: number; low: number; close: number; volume: number }[] }) {
+  if (!candles || candles.length === 0) {
+    return <div className="flex items-center justify-center h-full text-muted-foreground text-xs">Загрузка графика...</div>;
+  }
+  const W = 900, H = 200;
+  const pad = { top: 12, bottom: 24, left: 4, right: 64 };
+  const chartW = W - pad.left - pad.right;
+  const chartH = H - pad.top - pad.bottom;
+
+  const allPrices = candles.flatMap(c => [c.high, c.low]);
   const minP = Math.min(...allPrices);
   const maxP = Math.max(...allPrices);
   const range = maxP - minP || 1;
+  const toY = (p: number) => pad.top + chartH - ((p - minP) / range) * chartH;
+  const candleW = chartW / candles.length;
 
-  const toY = (p: number) => padding.top + chartH - ((p - minP) / range) * chartH;
-  const candleW = chartW / candles.current.length;
-
-  const priceLabels = Array.from({ length: 5 }, (_, i) => {
+  const maxVol = Math.max(...candles.map(c => c.volume));
+  const labels = Array.from({ length: 5 }, (_, i) => {
     const p = minP + (range / 4) * i;
     return { price: p, y: toY(p) };
   });
 
   return (
     <svg width="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block" }}>
-      {priceLabels.map((l, i) => (
+      {labels.map((l, i) => (
         <g key={i}>
-          <line x1={padding.left} y1={l.y} x2={W - padding.right} y2={l.y}
-            stroke="hsl(220 13% 14%)" strokeWidth="1" strokeDasharray="3,6" />
-          <text x={W - padding.right + 4} y={l.y + 3.5}
-            fill="hsl(215 12% 40%)" fontSize="9" fontFamily="IBM Plex Mono">
-            {(l.price / 1000).toFixed(1)}k
+          <line x1={pad.left} y1={l.y} x2={W - pad.right} y2={l.y}
+            stroke="hsl(220 13% 13%)" strokeWidth="1" strokeDasharray="3,6" />
+          <text x={W - pad.right + 4} y={l.y + 3.5} fill="hsl(215 12% 40%)" fontSize="9" fontFamily="IBM Plex Mono">
+            {l.price >= 1000 ? `${(l.price / 1000).toFixed(1)}k` : l.price.toFixed(l.price < 1 ? 4 : 2)}
           </text>
         </g>
       ))}
-      {candles.current.map((c, i) => {
-        const x = padding.left + i * candleW + candleW * 0.15;
-        const w = candleW * 0.7;
+      {candles.map((c, i) => {
+        const x = pad.left + i * candleW + candleW * 0.15;
+        const w = Math.max(candleW * 0.7, 1);
         const isUp = c.close >= c.open;
         const color = isUp ? "hsl(158 64% 48%)" : "hsl(0 72% 51%)";
         const bodyTop = toY(Math.max(c.open, c.close));
         const bodyH = Math.max(Math.abs(toY(c.open) - toY(c.close)), 1);
         const cx = x + w / 2;
+        const volH = (c.volume / (maxVol || 1)) * 20;
         return (
           <g key={i}>
-            <line x1={cx} y1={toY(c.high)} x2={cx} y2={toY(c.low)} stroke={color} strokeWidth="1" opacity="0.8" />
-            <rect x={x} y={bodyTop} width={w} height={bodyH} fill={color} opacity={isUp ? 0.9 : 0.85} />
+            <rect x={x} y={H - pad.bottom - volH} width={w} height={volH} fill={color} opacity="0.2" />
+            <line x1={cx} y1={toY(c.high)} x2={cx} y2={toY(c.low)} stroke={color} strokeWidth="1" opacity="0.75" />
+            <rect x={x} y={bodyTop} width={w} height={bodyH} fill={color} opacity="0.9" />
           </g>
-        );
-      })}
-      {candles.current.map((c, i) => {
-        const x = padding.left + i * candleW + candleW * 0.15;
-        const w = candleW * 0.7;
-        const isUp = c.close >= c.open;
-        const vol = Math.random() * 18 + 3;
-        return (
-          <rect key={i} x={x} y={H - padding.bottom - vol} width={w} height={vol}
-            fill={isUp ? "hsl(158 64% 48%)" : "hsl(0 72% 51%)"} opacity="0.25" />
         );
       })}
     </svg>
   );
 }
 
-function Sparkline({ positive }: { positive: boolean }) {
-  const pts = useRef(Array.from({ length: 20 }, (_, i) => {
-    const base = positive ? 10 + i * 1.2 : 36 - i * 1.2;
-    return base + (Math.random() - 0.5) * 8;
-  }));
-  const min = Math.min(...pts.current), max = Math.max(...pts.current);
-  const norm = pts.current.map(p => ((p - min) / (max - min || 1)) * 26 + 4);
+function Sparkline({ candles, positive }: { candles?: { close: number }[]; positive: boolean }) {
+  const pts = candles && candles.length > 3
+    ? candles.slice(-20).map(c => c.close)
+    : Array.from({ length: 20 }, (_, i) => {
+        const base = positive ? 10 + i * 1.2 : 36 - i * 1.2;
+        return base + (Math.random() - 0.5) * 6;
+      });
+  const min = Math.min(...pts), max = Math.max(...pts);
+  const norm = pts.map(p => ((p - min) / (max - min || 1)) * 26 + 4);
   const path = norm.map((y, i) => `${(i / (norm.length - 1)) * 72},${34 - y}`).join(" ");
   const color = positive ? "hsl(158 64% 48%)" : "hsl(0 72% 51%)";
   return (
     <svg width="72" height="34" viewBox="0 0 72 34">
-      <polyline points={path} fill="none" stroke={color} strokeWidth="1.5" opacity="0.75" />
+      <polyline points={path} fill="none" stroke={color} strokeWidth="1.5" opacity="0.8" />
+    </svg>
+  );
+}
+
+// ─── Fear & Greed Gauge ───────────────────────────────────────────────────────
+
+function FearGreedGauge({ value, classification }: { value: number; classification: string }) {
+  const angle = -135 + (value / 100) * 270;
+  const color = fgColor(value);
+  const r = 38, cx = 50, cy = 54;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const x1 = cx + r * Math.cos(toRad(-135));
+  const y1 = cy + r * Math.sin(toRad(-135));
+  const x2 = cx + r * Math.cos(toRad(135));
+  const y2 = cy + r * Math.sin(toRad(135));
+  const needleX = cx + (r - 8) * Math.cos(toRad(angle));
+  const needleY = cy + (r - 8) * Math.sin(toRad(angle));
+
+  const arcPath = (startDeg: number, endDeg: number) => {
+    const s = toRad(startDeg), e = toRad(endDeg);
+    const x1a = cx + r * Math.cos(s), y1a = cy + r * Math.sin(s);
+    const x2a = cx + r * Math.cos(e), y2a = cy + r * Math.sin(e);
+    const large = endDeg - startDeg > 180 ? 1 : 0;
+    return `M ${x1a} ${y1a} A ${r} ${r} 0 ${large} 1 ${x2a} ${y2a}`;
+  };
+
+  return (
+    <svg width="100" height="60" viewBox="0 0 100 60">
+      {[
+        { start: -135, end: -81, color: "hsl(0 72% 51%)" },
+        { start: -81, end: -27, color: "hsl(25 95% 55%)" },
+        { start: -27, end: 27, color: "hsl(43 96% 56%)" },
+        { start: 27, end: 81, color: "hsl(100 60% 50%)" },
+        { start: 81, end: 135, color: "hsl(158 64% 48%)" },
+      ].map((seg, i) => (
+        <path key={i} d={arcPath(seg.start, seg.end)} fill="none" stroke={seg.color} strokeWidth="6" opacity="0.7" />
+      ))}
+      <line x1={cx} y1={cy} x2={needleX} y2={needleY} stroke={color} strokeWidth="2" strokeLinecap="round" />
+      <circle cx={cx} cy={cy} r="3" fill={color} />
+      <text x={cx} y={cy - 10} textAnchor="middle" fill={color} fontSize="11" fontFamily="IBM Plex Mono" fontWeight="600">{value}</text>
     </svg>
   );
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
-function Dashboard() {
-  const [tick, setTick] = useState(0);
-  const btcPrice = (67842.50 + Math.sin(tick * 0.4) * 95).toFixed(2);
-
-  useEffect(() => {
-    const t = setInterval(() => setTick(p => p + 1), 2200);
-    return () => clearInterval(t);
-  }, []);
+function Dashboard({ market, signals }: { market: MarketState; signals: SignalsState }) {
+  const [selectedPair, setSelectedPair] = useState(0);
+  const btc = market.pairs[0];
+  const activePair = market.pairs[selectedPair] || market.pairs[0];
+  const activeSignals = signals.signals.filter(s => s.status === "active").length;
+  const longs = signals.signals.filter(s => s.type === "LONG").length;
+  const shorts = signals.signals.filter(s => s.type === "SHORT").length;
 
   return (
     <div className="flex flex-col h-full gap-3 overflow-y-auto pr-1 fade-in">
+      {/* Metrics */}
       <div className="grid grid-cols-4 gap-3">
-        {[
-          { label: "Баланс портфеля", value: "$24,841.30", sub: "+$1,241 сегодня", pos: true, icon: "Wallet" },
-          { label: "P&L за месяц", value: "+$3,492", sub: "+16.4% ROI", pos: true, icon: "TrendingUp" },
-          { label: "Активных сигналов", value: "3", sub: "2 LONG · 1 SHORT", pos: null, icon: "Zap" },
-          { label: "Win Rate", value: "72.3%", sub: "из 148 сделок", pos: true, icon: "Target" },
-        ].map((m, i) => (
-          <div key={i} className="panel rounded p-4 fade-in" style={{ animationDelay: `${i * 0.05}s` }}>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-muted-foreground text-xs uppercase tracking-wider">{m.label}</span>
-              <Icon name={m.icon} size={13} className="text-muted-foreground" />
-            </div>
-            <div className="font-mono text-xl font-semibold"
-              style={{ color: m.pos === true ? "hsl(var(--bull))" : m.pos === false ? "hsl(var(--bear))" : "hsl(var(--foreground))" }}>
-              {m.value}
-            </div>
-            <div className="text-xs text-muted-foreground mt-1">{m.sub}</div>
+        <div className="panel rounded p-4 fade-in">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-muted-foreground text-xs uppercase tracking-wider">BTC/USDT</span>
+            <Icon name="Bitcoin" size={13} className="text-muted-foreground" />
           </div>
-        ))}
+          <div className="font-mono text-xl font-semibold" style={{ color: btc ? (btc.change >= 0 ? "hsl(var(--bull))" : "hsl(var(--bear))") : "hsl(var(--foreground))" }}>
+            {btc ? `$${fmtPrice(btc.price)}` : "..."}
+          </div>
+          <div className={`text-xs mt-1 font-mono ${btc && btc.change >= 0 ? "bull" : "bear"}`}>
+            {btc ? `${btc.change >= 0 ? "+" : ""}${btc.change.toFixed(2)}% за 24ч` : "загрузка..."}
+          </div>
+        </div>
+        <div className="panel rounded p-4 fade-in" style={{ animationDelay: "0.05s" }}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-muted-foreground text-xs uppercase tracking-wider">Fear & Greed</span>
+            <Icon name="Activity" size={13} className="text-muted-foreground" />
+          </div>
+          {signals.loading ? (
+            <div className="font-mono text-xl text-muted-foreground">...</div>
+          ) : (
+            <>
+              <FearGreedGauge value={signals.fearGreed.value} classification={signals.fearGreed.classification} />
+              <div className="text-xs mt-0.5 font-mono" style={{ color: fgColor(signals.fearGreed.value) }}>
+                {signals.fearGreed.classification}
+              </div>
+            </>
+          )}
+        </div>
+        <div className="panel rounded p-4 fade-in" style={{ animationDelay: "0.1s" }}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-muted-foreground text-xs uppercase tracking-wider">AI Сигналы</span>
+            <Icon name="Zap" size={13} className="text-muted-foreground" />
+          </div>
+          <div className="font-mono text-xl font-semibold">{signals.loading ? "..." : signals.signals.length}</div>
+          <div className="text-xs text-muted-foreground mt-1">
+            <span className="bull">{longs} LONG</span> · <span className="bear">{shorts} SHORT</span>
+          </div>
+        </div>
+        <div className="panel rounded p-4 fade-in" style={{ animationDelay: "0.15s" }}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-muted-foreground text-xs uppercase tracking-wider">Анализ пар</span>
+            <Icon name="BarChart2" size={13} className="text-muted-foreground" />
+          </div>
+          <div className="font-mono text-xl font-semibold">{market.loading ? "..." : market.pairs.length}</div>
+          <div className="text-xs text-muted-foreground mt-1 font-mono">
+            {market.loading ? "сканирование..." : `обн. ${market.updatedAt.slice(11, 16)} UTC`}
+          </div>
+        </div>
       </div>
 
+      {/* Chart + Pairs */}
       <div className="grid grid-cols-3 gap-3" style={{ flex: "1 1 0", minHeight: 0 }}>
         <div className="col-span-2 panel rounded flex flex-col">
           <div className="flex items-center justify-between px-4 py-2 border-b border-border">
             <div className="flex items-center gap-3">
-              <span className="font-mono font-semibold text-sm">BTC/USDT</span>
-              <span className="font-mono text-base bull">{Number(btcPrice).toLocaleString()}</span>
-              <span className="badge-bull text-xs px-2 py-0.5 rounded font-mono">+2.34%</span>
+              <span className="font-mono font-semibold text-sm">{activePair?.symbol || "BTC/USDT"}</span>
+              <span className={`font-mono text-base ${activePair && activePair.change >= 0 ? "bull" : "bear"}`}>
+                {activePair ? fmtPrice(activePair.price) : "—"}
+              </span>
+              {activePair && (
+                <span className={`text-xs px-2 py-0.5 rounded font-mono ${activePair.change >= 0 ? "badge-bull" : "badge-bear"}`}>
+                  {activePair.change >= 0 ? "+" : ""}{activePair.change.toFixed(2)}%
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-4 text-xs text-muted-foreground font-mono">
-              <span>H: <span className="text-foreground">68,200</span></span>
-              <span>L: <span className="text-foreground">66,100</span></span>
-              <span>Vol: <span className="text-foreground">1.24B</span></span>
-            </div>
-            <div className="flex gap-1">
-              {["1м", "5м", "15м", "1ч", "4ч", "1д"].map(t => (
-                <button key={t} className={`text-xs px-2 py-0.5 rounded font-mono transition-colors ${t === "1ч" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>{t}</button>
-              ))}
+              {activePair && (
+                <>
+                  <span>H: <span className="text-foreground">{fmtPrice(activePair.high)}</span></span>
+                  <span>L: <span className="text-foreground">{fmtPrice(activePair.low)}</span></span>
+                  <span>Vol: <span className="text-foreground">{fmtVolume(activePair.volume)}</span></span>
+                  <span>RSI: <span className={activePair.rsi > 70 ? "bear" : activePair.rsi < 30 ? "bull" : "text-foreground"}>{activePair.rsi}</span></span>
+                </>
+              )}
             </div>
           </div>
           <div className="flex-1 p-2 min-h-0">
-            <CandleChart />
+            {market.loading ? (
+              <div className="flex items-center justify-center h-full">
+                <div className="flex flex-col items-center gap-2">
+                  <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                  <span className="text-xs text-muted-foreground font-mono">Загрузка данных с Binance...</span>
+                </div>
+              </div>
+            ) : (
+              <CandleChart candles={activePair?.candles || []} />
+            )}
           </div>
         </div>
 
+        {/* Market Pairs */}
         <div className="panel rounded flex flex-col">
           <div className="px-4 py-2 border-b border-border flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Рынок</span>
-            <div className="flex gap-1">
-              {["Все", "Spot"].map(f => (
-                <button key={f} className={`text-xs px-2 py-0.5 rounded font-mono ${f === "Все" ? "text-primary" : "text-muted-foreground"}`}>{f}</button>
-              ))}
-            </div>
+            {market.loading && <div className="w-3 h-3 border border-primary border-t-transparent rounded-full animate-spin" />}
           </div>
           <div className="flex-1 overflow-y-auto">
-            {PAIRS.map((p, i) => (
-              <div key={i} className="flex items-center justify-between px-4 py-2 row-hover border-b border-border/40">
-                <div className="flex items-center gap-2">
-                  <Sparkline positive={p.change > 0} />
-                  <div>
-                    <div className="font-mono text-xs font-medium">{p.symbol}</div>
-                    <div className="text-muted-foreground text-xs font-mono">{p.volume}</div>
+            {(market.loading ? Array(6).fill(null) : market.pairs).map((p, i) => (
+              <div key={i} onClick={() => p && setSelectedPair(i)}
+                className={`flex items-center justify-between px-4 py-2 row-hover border-b border-border/40 cursor-pointer ${selectedPair === i ? "bg-accent" : ""}`}>
+                {!p ? (
+                  <div className="flex items-center gap-3 w-full">
+                    <div className="w-16 h-6 bg-secondary rounded animate-pulse" />
+                    <div className="flex-1">
+                      <div className="w-20 h-2.5 bg-secondary rounded animate-pulse mb-1" />
+                      <div className="w-12 h-2 bg-secondary rounded animate-pulse" />
+                    </div>
                   </div>
-                </div>
-                <div className="text-right">
-                  <div className="font-mono text-xs">{p.price < 1 ? p.price.toFixed(4) : p.price.toLocaleString()}</div>
-                  <div className={`font-mono text-xs ${p.change > 0 ? "bull" : "bear"}`}>
-                    {p.change > 0 ? "+" : ""}{p.change}%
-                  </div>
-                </div>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <Sparkline candles={p.candles} positive={p.change >= 0} />
+                      <div>
+                        <div className="font-mono text-xs font-medium">{p.symbol}</div>
+                        <div className="text-muted-foreground text-xs font-mono">{fmtVolume(p.volume)}</div>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-mono text-xs">{fmtPrice(p.price)}</div>
+                      <div className={`font-mono text-xs ${p.change >= 0 ? "bull" : "bear"}`}>
+                        {p.change >= 0 ? "+" : ""}{p.change.toFixed(2)}%
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             ))}
           </div>
         </div>
       </div>
 
+      {/* Status Bar */}
       <div className="panel rounded p-2.5 flex items-center gap-6">
-        <span className="text-xs text-muted-foreground uppercase tracking-wider">Биржи:</span>
-        {[
-          { name: "Binance", ping: "12ms" },
-          { name: "Bybit", ping: "18ms" },
-          { name: "OKX", ping: "24ms" },
-        ].map((e, i) => (
+        <span className="text-xs text-muted-foreground uppercase tracking-wider">Статус:</span>
+        {["Binance API", "AI Engine", "Fear & Greed"].map((e, i) => (
           <div key={i} className="flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-bull blink" />
-            <span className="font-mono text-xs">{e.name}</span>
-            <span className="font-mono text-xs text-muted-foreground">{e.ping}</span>
+            <div className={`w-1.5 h-1.5 rounded-full blink ${market.loading && i === 0 ? "bg-gold" : "bg-bull"}`} />
+            <span className="font-mono text-xs">{e}</span>
+            <span className="font-mono text-xs text-muted-foreground">
+              {i === 0 && market.loading ? "опрос..." : "онлайн"}
+            </span>
           </div>
         ))}
         <div className="ml-auto font-mono text-xs text-muted-foreground">
@@ -246,88 +359,197 @@ function Dashboard() {
 
 // ─── Signals ──────────────────────────────────────────────────────────────────
 
-function Signals() {
+function Signals({ signals }: { signals: SignalsState }) {
+  const [filter, setFilter] = useState("Все");
+  const [expanded, setExpanded] = useState<number | null>(null);
+
+  const filtered = signals.signals.filter(s => {
+    if (filter === "LONG") return s.type === "LONG";
+    if (filter === "SHORT") return s.type === "SHORT";
+    if (filter === "Активные") return s.status === "active";
+    return true;
+  });
+
+  const active = signals.signals.filter(s => s.status === "active").length;
+  const avgConf = signals.signals.length > 0
+    ? Math.round(signals.signals.reduce((a, s) => a + s.confidence, 0) / signals.signals.length)
+    : 0;
+
   return (
     <div className="flex flex-col h-full gap-3 fade-in">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="text-sm font-semibold">Активные сигналы</span>
-          <span className="badge-bull text-xs px-2 py-0.5 rounded-full font-mono">3 активных</span>
+          <span className="text-sm font-semibold">AI Сигналы</span>
+          {signals.loading ? (
+            <span className="badge-gold text-xs px-2 py-0.5 rounded-full font-mono flex items-center gap-1.5">
+              <div className="w-2 h-2 border border-current border-t-transparent rounded-full animate-spin" />
+              анализ...
+            </span>
+          ) : (
+            <span className="badge-bull text-xs px-2 py-0.5 rounded-full font-mono">{active} активных</span>
+          )}
+          {!signals.loading && signals.fearGreed.value > 0 && (
+            <span className="text-xs font-mono" style={{ color: fgColor(signals.fearGreed.value) }}>
+              F&G: {signals.fearGreed.value} — {signals.fearGreed.classification}
+            </span>
+          )}
         </div>
         <div className="flex gap-2">
-          {["Все", "LONG", "SHORT", "Ожидание"].map(f => (
-            <button key={f} className={`text-xs px-3 py-1 rounded border font-mono transition-colors ${f === "Все" ? "border-primary text-primary" : "border-border text-muted-foreground hover:border-foreground hover:text-foreground"}`}>{f}</button>
+          {["Все", "LONG", "SHORT", "Активные"].map(f => (
+            <button key={f} onClick={() => setFilter(f)}
+              className={`text-xs px-3 py-1 rounded border font-mono transition-colors ${filter === f ? "border-primary text-primary" : "border-border text-muted-foreground hover:border-foreground hover:text-foreground"}`}>
+              {f}
+            </button>
           ))}
         </div>
       </div>
 
       <div className="flex flex-col gap-2 flex-1 overflow-y-auto">
-        {SIGNALS.map((s, i) => (
-          <div key={s.id} className="panel rounded p-4 fade-in row-hover" style={{ animationDelay: `${i * 0.04}s` }}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <span className={`text-xs font-mono font-bold px-2.5 py-1 rounded ${s.type === "LONG" ? "badge-bull" : "badge-bear"}`}>{s.type}</span>
+        {signals.loading ? (
+          Array(4).fill(null).map((_, i) => (
+            <div key={i} className="panel rounded p-4 fade-in" style={{ animationDelay: `${i * 0.08}s` }}>
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-12 h-6 bg-secondary rounded animate-pulse" />
                 <div>
-                  <div className="font-mono font-semibold text-sm">{s.pair}</div>
-                  <div className="text-xs text-muted-foreground">{s.exchange} · {s.time}</div>
+                  <div className="w-24 h-3 bg-secondary rounded animate-pulse mb-1" />
+                  <div className="w-16 h-2.5 bg-secondary rounded animate-pulse" />
                 </div>
               </div>
-              <div className="flex items-center gap-8">
-                {[
-                  { label: "Вход", val: s.entry, color: "" },
-                  { label: "Цель", val: s.target, color: "bull" },
-                  { label: "Стоп", val: s.stop, color: "bear" },
-                ].map((f, fi) => (
-                  <div key={fi} className="text-center">
-                    <div className="text-xs text-muted-foreground mb-0.5">{f.label}</div>
-                    <div className={`font-mono text-sm ${f.color}`}>{f.val}</div>
-                  </div>
+              <div className="flex gap-6">
+                {Array(4).fill(null).map((_, j) => (
+                  <div key={j} className="w-16 h-8 bg-secondary rounded animate-pulse" />
                 ))}
-                <div className="text-center">
-                  <div className="text-xs text-muted-foreground mb-0.5">Потенциал</div>
-                  <div className={`font-mono text-sm ${s.type === "LONG" ? "bull" : "bear"}`}>
-                    {s.type === "LONG"
-                      ? `+${(((s.target - s.entry) / s.entry) * 100).toFixed(1)}%`
-                      : `+${(((s.entry - s.target) / s.entry) * 100).toFixed(1)}%`}
-                  </div>
-                </div>
-                <div className="text-center min-w-24">
-                  <div className="text-xs text-muted-foreground mb-1">Уверенность</div>
-                  <div className="w-24 h-1.5 bg-secondary rounded-full overflow-hidden">
-                    <div className="h-full rounded-full" style={{
-                      width: `${s.confidence}%`,
-                      background: s.confidence > 80 ? "hsl(var(--bull))" : s.confidence > 70 ? "hsl(var(--gold))" : "hsl(var(--bear))"
-                    }} />
-                  </div>
-                  <div className="font-mono text-xs mt-0.5">{s.confidence}%</div>
-                </div>
-                <span className={`text-xs px-2 py-0.5 rounded font-mono ${s.status === "active" ? "badge-bull" : "badge-gold"}`}>
-                  {s.status === "active" ? "● Активен" : "○ Ожидание"}
-                </span>
               </div>
             </div>
+          ))
+        ) : filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center flex-1 text-muted-foreground gap-2">
+            <Icon name="Search" size={32} className="opacity-30" />
+            <span className="text-sm">Нет сигналов по выбранному фильтру</span>
           </div>
-        ))}
+        ) : (
+          filtered.map((s, i) => (
+            <div key={i} className="panel rounded fade-in" style={{ animationDelay: `${i * 0.04}s` }}>
+              <div className="p-4 row-hover cursor-pointer" onClick={() => setExpanded(expanded === i ? null : i)}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className={`text-xs font-mono font-bold px-2.5 py-1 rounded ${s.type === "LONG" ? "badge-bull" : "badge-bear"}`}>
+                      {s.type}
+                    </span>
+                    <div>
+                      <div className="font-mono font-semibold text-sm">{s.pair}</div>
+                      <div className="text-xs text-muted-foreground">{s.exchange} · {s.time} UTC</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-8">
+                    {[
+                      { label: "Вход", val: fmtPrice(s.entry), cls: "" },
+                      { label: "Цель", val: fmtPrice(s.target), cls: "bull" },
+                      { label: "Стоп", val: fmtPrice(s.stop), cls: "bear" },
+                    ].map((f, fi) => (
+                      <div key={fi} className="text-center">
+                        <div className="text-xs text-muted-foreground mb-0.5">{f.label}</div>
+                        <div className={`font-mono text-sm ${f.cls}`}>{f.val}</div>
+                      </div>
+                    ))}
+                    <div className="text-center">
+                      <div className="text-xs text-muted-foreground mb-0.5">Потенциал</div>
+                      <div className={`font-mono text-sm ${s.type === "LONG" ? "bull" : "bear"}`}>+{s.potential_pct}%</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-xs text-muted-foreground mb-0.5">R/R</div>
+                      <div className="font-mono text-sm">1:{s.risk_reward}</div>
+                    </div>
+                    <div className="text-center min-w-28">
+                      <div className="text-xs text-muted-foreground mb-1">Уверенность AI</div>
+                      <div className="w-28 h-1.5 bg-secondary rounded-full overflow-hidden">
+                        <div className="h-full rounded-full transition-all" style={{
+                          width: `${s.confidence}%`,
+                          background: s.confidence > 80 ? "hsl(var(--bull))" : s.confidence > 70 ? "hsl(var(--gold))" : "hsl(var(--bear))"
+                        }} />
+                      </div>
+                      <div className="font-mono text-xs mt-0.5">{s.confidence}%</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs px-2 py-0.5 rounded font-mono ${s.status === "active" ? "badge-bull" : "badge-gold"}`}>
+                        {s.status === "active" ? "● Активен" : "○ Ожидание"}
+                      </span>
+                      <Icon name={expanded === i ? "ChevronUp" : "ChevronDown"} size={14} className="text-muted-foreground" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Expanded analysis */}
+              {expanded === i && (
+                <div className="px-4 pb-4 border-t border-border/50 fade-in">
+                  <div className="grid grid-cols-4 gap-3 mt-3 mb-3">
+                    {[
+                      { label: "RSI (1h)", val: s.rsi, warn: s.rsi > 70 || s.rsi < 30 },
+                      { label: "RSI (4h)", val: s.rsi_4h, warn: s.rsi_4h > 70 || s.rsi_4h < 30 },
+                      { label: "MACD тренд", val: s.macd.trend === "bullish" ? "Бычий" : s.macd.trend === "bearish" ? "Медвежий" : "Нейтральный", warn: false },
+                      { label: "Bollinger %B", val: s.bollinger.pct_b.toFixed(2), warn: s.bollinger.pct_b > 0.9 || s.bollinger.pct_b < 0.1 },
+                    ].map((m, mi) => (
+                      <div key={mi} className="text-center p-2 bg-secondary/50 rounded">
+                        <div className="text-xs text-muted-foreground mb-0.5">{m.label}</div>
+                        <div className={`font-mono text-sm font-semibold ${m.warn ? (s.type === "LONG" ? "bull" : "bear") : ""}`}>{m.val}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-xs text-muted-foreground mb-2">Факторы анализа ({s.factors.length}):</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {s.factors.map((f, fi) => (
+                      <span key={fi} className={`text-xs px-2 py-1 rounded border font-mono ${
+                        f.includes("LONG") || f.includes("бычий") || f.includes("Бычь") || f.includes("перепроданность") || f.includes("Fear")
+                          ? "badge-bull"
+                          : f.includes("SHORT") || f.includes("медвежий") || f.includes("Медвеж") || f.includes("перекупленность") || f.includes("Greed")
+                          ? "badge-bear"
+                          : "border-border text-muted-foreground"
+                      }`}>{f}</span>
+                    ))}
+                  </div>
+                  {s.bollinger.squeeze && (
+                    <div className="mt-2 text-xs badge-gold px-3 py-1.5 rounded">
+                      ⚡ Bollinger Squeeze обнаружен — ожидается взрывное ценовое движение
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))
+        )}
       </div>
 
-      <div className="panel rounded p-3 grid grid-cols-4 gap-4 text-center">
-        {[
-          { label: "Сигналов сегодня", value: "12" },
-          { label: "Ср. уверенность", value: "77.6%" },
-          { label: "LONG / SHORT", value: "8 / 4" },
-          { label: "Ср. потенциал", value: "+4.2%" },
-        ].map((s, i) => (
-          <div key={i}>
-            <div className="font-mono text-base font-semibold">{s.value}</div>
-            <div className="text-xs text-muted-foreground">{s.label}</div>
-          </div>
-        ))}
-      </div>
+      {!signals.loading && signals.signals.length > 0 && (
+        <div className="panel rounded p-3 grid grid-cols-4 gap-4 text-center">
+          {[
+            { label: "Сигналов найдено", value: String(signals.signals.length) },
+            { label: "Ср. уверенность AI", value: `${avgConf}%` },
+            { label: "LONG / SHORT", value: `${signals.signals.filter(s => s.type === "LONG").length} / ${signals.signals.filter(s => s.type === "SHORT").length}` },
+            { label: "Fear & Greed", value: String(signals.fearGreed.value) },
+          ].map((s, i) => (
+            <div key={i}>
+              <div className="font-mono text-base font-semibold">{s.value}</div>
+              <div className="text-xs text-muted-foreground">{s.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── History ──────────────────────────────────────────────────────────────────
+// ─── History (static — demo trades) ──────────────────────────────────────────
+
+const DEMO_HISTORY = [
+  { id: 1, pair: "BTC/USDT", type: "LONG", entry: 64200, exit: 67100, pnl: 4.51, pnlUSD: 891, exchange: "Binance", date: "14 апр", duration: "3ч 12м" },
+  { id: 2, pair: "ETH/USDT", type: "SHORT", entry: 3650, exit: 3520, pnl: 3.56, pnlUSD: 712, exchange: "Bybit", date: "13 апр", duration: "5ч 40м" },
+  { id: 3, pair: "SOL/USDT", type: "LONG", entry: 192, exit: 184, pnl: -4.17, pnlUSD: -334, exchange: "OKX", date: "13 апр", duration: "2ч 05м" },
+  { id: 4, pair: "BNB/USDT", type: "LONG", entry: 578, exit: 608, pnl: 5.19, pnlUSD: 600, exchange: "Binance", date: "12 апр", duration: "8ч 22м" },
+  { id: 5, pair: "DOGE/USDT", type: "SHORT", entry: 0.198, exit: 0.185, pnl: 6.57, pnlUSD: 394, exchange: "Bybit", date: "12 апр", duration: "1ч 18м" },
+  { id: 6, pair: "XRP/USDT", type: "LONG", entry: 0.598, exit: 0.634, pnl: 6.02, pnlUSD: 482, exchange: "OKX", date: "11 апр", duration: "6ч 54м" },
+  { id: 7, pair: "BTC/USDT", type: "SHORT", entry: 69200, exit: 70100, pnl: -1.30, pnlUSD: -261, exchange: "Binance", date: "11 апр", duration: "4ч 31м" },
+];
 
 function History() {
   return (
@@ -342,7 +564,6 @@ function History() {
           <span>Итого: <span className="bull font-semibold">+$2,284</span></span>
         </div>
       </div>
-
       <div className="panel rounded flex-1 overflow-hidden flex flex-col">
         <div className="grid font-mono text-xs text-muted-foreground uppercase tracking-wider px-4 py-2 border-b border-border bg-card"
           style={{ gridTemplateColumns: "1.2fr 70px 80px 1fr 1fr 1fr 80px 90px" }}>
@@ -351,7 +572,7 @@ function History() {
           <span>Длит.</span><span>Дата</span>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {HISTORY.map((h, i) => (
+          {DEMO_HISTORY.map((h, i) => (
             <div key={h.id} className="grid items-center px-4 py-2.5 border-b border-border/40 row-hover fade-in"
               style={{ gridTemplateColumns: "1.2fr 70px 80px 1fr 1fr 1fr 80px 90px", animationDelay: `${i * 0.03}s` }}>
               <span className="font-mono text-xs font-medium">{h.pair}</span>
@@ -373,7 +594,6 @@ function History() {
           ))}
         </div>
       </div>
-
       <div className="grid grid-cols-5 gap-3">
         {[
           { label: "Всего сделок", value: "148", icon: "Hash", pos: null },
@@ -395,12 +615,35 @@ function History() {
 
 // ─── Notifications ────────────────────────────────────────────────────────────
 
-function NotificationsSection() {
-  const [notifications, setNotifications] = useState(NOTIFICATIONS_DATA);
-  const unread = notifications.filter(n => !n.read).length;
+function NotificationsSection({ signals }: { signals: SignalsState }) {
+  const [read, setRead] = useState<Set<number>>(new Set());
 
-  const iconMap: Record<string, string> = { signal: "Zap", tp: "TrendingUp", sl: "TrendingDown", system: "Settings" };
-  const colorMap: Record<string, string> = { signal: "gold", tp: "bull", sl: "bear", system: "text-muted-foreground" };
+  const items = signals.signals.slice(0, 10).map((s, i) => ({
+    id: i,
+    type: s.type === "LONG" ? "signal_long" : "signal_short",
+    text: `AI сигнал ${s.type} на ${s.pair} — уверенность ${s.confidence}% (${s.factors[0] || ""})`,
+    sub: `Вход: ${fmtPrice(s.entry)} → Цель: ${fmtPrice(s.target)} · R/R: 1:${s.risk_reward}`,
+    time: `${s.time} UTC`,
+    confidence: s.confidence,
+    fear_greed: s.fear_greed?.value,
+  }));
+
+  const staticItems = [
+    { id: 100, type: "system", text: "AI движок запущен: анализирует 6 пар с Binance", sub: "RSI, MACD, Bollinger, Fear & Greed, дивергенции", time: "сейчас", confidence: null, fear_greed: null },
+    { id: 101, type: "fg", text: `Fear & Greed Index: ${signals.fearGreed.value} — ${signals.fearGreed.classification}`, sub: "Рыночный сентимент обновлён", time: "сейчас", confidence: null, fear_greed: signals.fearGreed.value },
+  ];
+
+  const all = [...items, ...staticItems];
+  const unread = all.filter(n => !read.has(n.id)).length;
+
+  const iconMap: Record<string, string> = {
+    signal_long: "TrendingUp", signal_short: "TrendingDown",
+    system: "Bot", fg: "Activity",
+  };
+  const colorMap: Record<string, string> = {
+    signal_long: "bull", signal_short: "bear",
+    system: "text-muted-foreground", fg: "gold",
+  };
 
   return (
     <div className="flex flex-col h-full gap-3 fade-in">
@@ -409,129 +652,182 @@ function NotificationsSection() {
           <span className="text-sm font-semibold">Уведомления</span>
           {unread > 0 && <span className="badge-gold text-xs px-2 py-0.5 rounded-full font-mono">{unread} новых</span>}
         </div>
-        <button onClick={() => setNotifications(n => n.map(x => ({ ...x, read: true })))}
+        <button onClick={() => setRead(new Set(all.map(n => n.id)))}
           className="text-xs text-muted-foreground hover:text-foreground transition-colors font-mono">
           Отметить все прочитанными
         </button>
       </div>
-      <div className="flex flex-col gap-2 flex-1 overflow-y-auto">
-        {notifications.map((n, i) => (
-          <div key={n.id}
-            className={`panel rounded p-4 flex items-start gap-3 row-hover fade-in transition-all ${!n.read ? "border-l-2 border-l-primary" : ""}`}
-            style={{ animationDelay: `${i * 0.04}s` }}
-            onClick={() => setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, read: true } : x))}>
-            <div className={`mt-0.5 ${colorMap[n.type]}`}>
-              <Icon name={iconMap[n.type]} size={15} />
+      {signals.loading ? (
+        <div className="flex items-center justify-center flex-1 gap-2 text-muted-foreground">
+          <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <span className="text-xs font-mono">AI анализирует рынок...</span>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2 flex-1 overflow-y-auto">
+          {all.map((n, i) => (
+            <div key={n.id}
+              className={`panel rounded p-4 flex items-start gap-3 row-hover fade-in transition-all cursor-pointer ${!read.has(n.id) ? "border-l-2 border-l-primary" : ""}`}
+              style={{ animationDelay: `${i * 0.04}s` }}
+              onClick={() => setRead(prev => new Set([...prev, n.id]))}>
+              <div className={`mt-0.5 ${colorMap[n.type]}`}>
+                <Icon name={iconMap[n.type]} size={15} />
+              </div>
+              <div className="flex-1">
+                <div className={`text-sm ${read.has(n.id) ? "text-muted-foreground" : "text-foreground"}`}>{n.text}</div>
+                <div className="text-xs text-muted-foreground mt-0.5 font-mono">{n.sub}</div>
+                <div className="text-xs text-muted-foreground mt-0.5 font-mono">{n.time}</div>
+              </div>
+              {!read.has(n.id) && <div className="w-1.5 h-1.5 rounded-full bg-primary mt-1.5 blink" />}
+              {n.confidence && (
+                <span className={`text-xs font-mono ${n.confidence >= 80 ? "bull" : n.confidence >= 70 ? "gold" : "bear"}`}>
+                  {n.confidence}%
+                </span>
+              )}
             </div>
-            <div className="flex-1">
-              <div className={`text-sm ${n.read ? "text-muted-foreground" : "text-foreground"}`}>{n.text}</div>
-              <div className="text-xs text-muted-foreground mt-0.5 font-mono">{n.time}</div>
-            </div>
-            {!n.read && <div className="w-1.5 h-1.5 rounded-full bg-primary mt-1.5 blink" />}
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
 
-function Analytics() {
-  const weeklyData = [
-    { day: "Пн", pnl: 420, trades: 5 },
-    { day: "Вт", pnl: -180, trades: 3 },
-    { day: "Ср", pnl: 890, trades: 8 },
-    { day: "Чт", pnl: 340, trades: 4 },
-    { day: "Пт", pnl: 712, trades: 6 },
-    { day: "Сб", pnl: -120, trades: 2 },
-    { day: "Вс", pnl: 242, trades: 3 },
-  ];
-  const max = Math.max(...weeklyData.map(d => Math.abs(d.pnl)));
-
+function Analytics({ market, signals }: { market: MarketState; signals: SignalsState }) {
   return (
     <div className="flex flex-col h-full gap-3 overflow-y-auto pr-1 fade-in">
-      <span className="text-sm font-semibold">Аналитика</span>
-      <div className="grid grid-cols-3 gap-3">
-        <div className="col-span-2 panel rounded p-4">
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-4">P&L по дням (7д)</div>
-          <div className="flex items-end gap-2 h-36">
-            {weeklyData.map((d, i) => (
+      <span className="text-sm font-semibold">Аналитика рынка</span>
+
+      {/* RSI Overview */}
+      <div className="panel rounded p-4">
+        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-4">RSI Обзор (1h) — реальные данные</div>
+        {market.loading ? (
+          <div className="flex gap-2">
+            {Array(6).fill(null).map((_, i) => <div key={i} className="flex-1 h-16 bg-secondary rounded animate-pulse" />)}
+          </div>
+        ) : (
+          <div className="flex items-end gap-3">
+            {market.pairs.map((p, i) => (
               <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                <span className={`font-mono text-xs ${d.pnl > 0 ? "bull" : "bear"}`}>{d.pnl > 0 ? "+" : ""}${d.pnl}</span>
-                <div className="w-full flex items-end justify-center" style={{ height: "90px" }}>
-                  <div className="w-full rounded-sm"
-                    style={{ height: `${(Math.abs(d.pnl) / max) * 80}px`, background: d.pnl > 0 ? "hsl(var(--bull))" : "hsl(var(--bear))", opacity: 0.8 }} />
-                </div>
-                <span className="text-xs text-muted-foreground font-mono">{d.day}</span>
+                <span className="font-mono text-xs" style={{
+                  color: p.rsi > 70 ? "hsl(var(--bear))" : p.rsi < 30 ? "hsl(var(--bull))" : "hsl(var(--foreground))"
+                }}>{p.rsi}</span>
+                <div className="w-full rounded-sm" style={{
+                  height: `${(p.rsi / 100) * 60}px`,
+                  background: p.rsi > 70 ? "hsl(var(--bear))" : p.rsi < 30 ? "hsl(var(--bull))" : "hsl(43 96% 56%)",
+                  opacity: 0.8,
+                  minHeight: "4px"
+                }} />
+                {p.rsi > 70 && <div className="w-full h-0.5 rounded" style={{ background: "hsl(var(--bear))", opacity: 0.4 }} />}
+                {p.rsi < 30 && <div className="w-full h-0.5 rounded" style={{ background: "hsl(var(--bull))", opacity: 0.4 }} />}
+                <span className="text-xs text-muted-foreground font-mono">{p.symbol.replace("/USDT", "")}</span>
+                <span className="text-xs font-mono" style={{ color: p.rsi > 70 ? "hsl(var(--bear))" : p.rsi < 30 ? "hsl(var(--bull))" : "hsl(var(--muted-foreground))" }}>
+                  {p.rsi > 70 ? "Перекуп." : p.rsi < 30 ? "Перепр." : "Норма"}
+                </span>
               </div>
             ))}
           </div>
-        </div>
-        <div className="flex flex-col gap-3">
-          <div className="panel rounded p-4">
-            <div className="text-xs text-muted-foreground mb-1">Лучший день</div>
-            <div className="font-mono text-lg bull font-semibold">+$890</div>
-            <div className="text-xs text-muted-foreground">Среда · 8 сделок</div>
-          </div>
-          <div className="panel rounded p-4">
-            <div className="text-xs text-muted-foreground mb-1">Итого за неделю</div>
-            <div className="font-mono text-lg bull font-semibold">+$2,304</div>
-            <div className="text-xs text-muted-foreground">31 сделка</div>
-          </div>
-        </div>
+        )}
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
-        {[
-          { name: "Binance", trades: 58, winrate: 74, pnl: "+$1,420", color: "hsl(43 96% 56%)" },
-          { name: "Bybit", trades: 47, winrate: 70, pnl: "+$892", color: "hsl(210 80% 60%)" },
-          { name: "OKX", trades: 43, winrate: 72, pnl: "+$972", color: "hsl(280 70% 60%)" },
-        ].map((e, i) => (
-          <div key={i} className="panel rounded p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-2 h-2 rounded-full" style={{ background: e.color }} />
-              <span className="font-semibold text-sm">{e.name}</span>
-            </div>
+      {/* Signals by confidence */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="panel rounded p-4">
+          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">AI Уверенность сигналов</div>
+          {signals.loading ? (
             <div className="space-y-2">
-              {[
-                { label: "Сделок", val: String(e.trades), cls: "" },
-                { label: "Win Rate", val: `${e.winrate}%`, cls: "bull" },
-                { label: "P&L", val: e.pnl, cls: "bull" },
-              ].map((r, ri) => (
-                <div key={ri} className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">{r.label}</span>
-                  <span className={`font-mono ${r.cls}`}>{r.val}</span>
+              {Array(4).fill(null).map((_, i) => <div key={i} className="h-6 bg-secondary rounded animate-pulse" />)}
+            </div>
+          ) : signals.signals.length === 0 ? (
+            <div className="text-xs text-muted-foreground text-center py-4">Нет данных</div>
+          ) : (
+            <div className="flex flex-col gap-2.5">
+              {signals.signals.slice(0, 6).map((s, i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <span className={`font-mono text-xs font-bold w-8 ${s.type === "LONG" ? "bull" : "bear"}`}>{s.type}</span>
+                  <span className="font-mono text-xs w-20 text-muted-foreground">{s.pair.replace("/USDT", "")}</span>
+                  <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all" style={{
+                      width: `${s.confidence}%`,
+                      background: s.confidence > 80 ? "hsl(var(--bull))" : s.confidence > 70 ? "hsl(var(--gold))" : "hsl(var(--bear))"
+                    }} />
+                  </div>
+                  <span className="font-mono text-xs w-10 text-right">{s.confidence}%</span>
                 </div>
               ))}
-              <div className="w-full h-1 bg-secondary rounded-full overflow-hidden mt-1">
-                <div className="h-full rounded-full" style={{ width: `${e.winrate}%`, background: e.color }} />
+            </div>
+          )}
+        </div>
+
+        <div className="panel rounded p-4">
+          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Рыночный сентимент</div>
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Fear & Greed Index</span>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-lg font-semibold" style={{ color: fgColor(signals.fearGreed.value) }}>
+                  {signals.loading ? "..." : signals.fearGreed.value}
+                </span>
+                <FearGreedGauge value={signals.fearGreed.value} classification={signals.fearGreed.classification} />
+              </div>
+            </div>
+            <div className="text-xs text-muted-foreground" style={{ color: fgColor(signals.fearGreed.value) }}>
+              {signals.fearGreed.classification}
+            </div>
+            {signals.fearGreed.value <= 25 && (
+              <div className="text-xs badge-bull px-2 py-1.5 rounded">
+                Исторически — лучшее время для входа в LONG
+              </div>
+            )}
+            {signals.fearGreed.value >= 80 && (
+              <div className="text-xs badge-bear px-2 py-1.5 rounded">
+                Рынок перегрет — высокий риск коррекции
+              </div>
+            )}
+            <div className="border-t border-border pt-2 mt-1">
+              <div className="text-xs text-muted-foreground mb-1">Распределение LONG/SHORT:</div>
+              {!signals.loading && signals.signals.length > 0 && (
+                <div className="flex h-3 rounded overflow-hidden gap-0.5">
+                  <div style={{ flex: signals.signals.filter(s => s.type === "LONG").length, background: "hsl(var(--bull))", opacity: 0.7 }} />
+                  <div style={{ flex: signals.signals.filter(s => s.type === "SHORT").length, background: "hsl(var(--bear))", opacity: 0.7 }} />
+                </div>
+              )}
+              <div className="flex justify-between text-xs font-mono mt-1">
+                <span className="bull">{signals.signals.filter(s => s.type === "LONG").length} LONG</span>
+                <span className="bear">{signals.signals.filter(s => s.type === "SHORT").length} SHORT</span>
               </div>
             </div>
           </div>
-        ))}
+        </div>
       </div>
 
+      {/* Market summary */}
       <div className="panel rounded p-4">
-        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Топ пары по доходности</div>
-        <div className="flex flex-col gap-2.5">
-          {[
-            { pair: "BTC/USDT", trades: 42, pnl: "+$1,240", winrate: 76 },
-            { pair: "ETH/USDT", trades: 35, pnl: "+$820", winrate: 71 },
-            { pair: "SOL/USDT", trades: 28, pnl: "+$480", winrate: 68 },
-            { pair: "BNB/USDT", trades: 22, pnl: "+$320", winrate: 73 },
-          ].map((p, i) => (
-            <div key={i} className="flex items-center gap-4">
-              <span className="font-mono text-xs text-muted-foreground w-4">{i + 1}</span>
-              <span className="font-mono text-xs font-medium w-24">{p.pair}</span>
-              <div className="flex-1 h-1 bg-secondary rounded-full overflow-hidden">
-                <div className="h-full bg-primary rounded-full" style={{ width: `${p.winrate}%` }} />
+        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Обзор рынка — топ пары</div>
+        {market.loading ? (
+          <div className="space-y-2">
+            {Array(5).fill(null).map((_, i) => <div key={i} className="h-8 bg-secondary rounded animate-pulse" />)}
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {[...market.pairs].sort((a, b) => Math.abs(b.change) - Math.abs(a.change)).map((p, i) => (
+              <div key={i} className="flex items-center gap-4">
+                <span className="font-mono text-xs text-muted-foreground w-4">{i + 1}</span>
+                <span className="font-mono text-xs font-medium w-24">{p.symbol}</span>
+                <div className="flex-1 relative h-1.5 bg-secondary rounded-full overflow-hidden">
+                  <div className="h-full rounded-full" style={{
+                    width: `${Math.min(Math.abs(p.change) * 8, 100)}%`,
+                    background: p.change >= 0 ? "hsl(var(--bull))" : "hsl(var(--bear))"
+                  }} />
+                </div>
+                <span className={`font-mono text-xs w-16 text-right ${p.change >= 0 ? "bull" : "bear"}`}>
+                  {p.change >= 0 ? "+" : ""}{p.change.toFixed(2)}%
+                </span>
+                <span className="font-mono text-xs text-muted-foreground w-20 text-right">{fmtVolume(p.volume)}</span>
               </div>
-              <span className="font-mono text-xs text-muted-foreground w-14 text-right">{p.trades} сд.</span>
-              <span className="font-mono text-xs bull w-20 text-right">{p.pnl}</span>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -539,66 +835,40 @@ function Analytics() {
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
-function Settings() {
+function Settings({ onRefresh }: { onRefresh: () => void }) {
   return (
     <div className="flex flex-col h-full gap-4 overflow-y-auto pr-1 fade-in">
       <span className="text-sm font-semibold">Настройки</span>
 
       <div className="panel rounded p-4">
-        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-4">Подключение бирж</div>
-        <div className="flex flex-col gap-4">
-          {[
-            { name: "Binance", key: "BN_••••••••XKQP", connected: true },
-            { name: "Bybit", key: "BY_••••••••LMWZ", connected: true },
-            { name: "OKX", key: "", connected: false },
-          ].map((e, i) => (
-            <div key={i} className="border border-border rounded p-3">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <div className={`w-1.5 h-1.5 rounded-full ${e.connected ? "bg-bull blink" : "bg-muted-foreground"}`} />
-                  <span className="font-semibold text-sm">{e.name}</span>
-                </div>
-                <span className={`text-xs font-mono px-2 py-0.5 rounded ${e.connected ? "badge-bull" : "badge-bear"}`}>
-                  {e.connected ? "Подключено" : "Не подключено"}
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs text-muted-foreground block mb-1">API Key</label>
-                  <input type="text" defaultValue={e.key} placeholder="Введите API Key..."
-                    className="w-full bg-secondary border border-border rounded px-2 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary" />
-                </div>
-                <div>
-                  <label className="text-xs text-muted-foreground block mb-1">Secret Key</label>
-                  <input type="password" placeholder="Введите Secret Key..."
-                    className="w-full bg-secondary border border-border rounded px-2 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary" />
-                </div>
-              </div>
-              <div className="flex gap-2 mt-2">
-                <button className="text-xs px-3 py-1.5 bg-primary text-primary-foreground rounded font-mono hover:opacity-80 transition-opacity">
-                  {e.connected ? "Обновить" : "Подключить"}
-                </button>
-                {e.connected && (
-                  <button className="text-xs px-3 py-1.5 border border-border text-muted-foreground rounded font-mono hover:text-foreground transition-colors">
-                    Отключить
-                  </button>
-                )}
-              </div>
+        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-4">Источники данных</div>
+        {[
+          { name: "Binance Public API", desc: "Цены, свечи, объёмы (без ключей)", status: true, type: "data" },
+          { name: "Alternative.me", desc: "Fear & Greed Index", status: true, type: "data" },
+          { name: "AI Signal Engine", desc: "RSI, MACD, Bollinger, тренд, дивергенции", status: true, type: "ai" },
+        ].map((e, i) => (
+          <div key={i} className="flex items-center justify-between py-2 border-b border-border/50 last:border-0">
+            <div>
+              <div className="text-sm font-medium">{e.name}</div>
+              <div className="text-xs text-muted-foreground">{e.desc}</div>
             </div>
-          ))}
-        </div>
+            <span className={`text-xs font-mono px-2 py-0.5 rounded ${e.status ? "badge-bull" : "badge-bear"}`}>
+              {e.status ? "● Активно" : "○ Откл."}
+            </span>
+          </div>
+        ))}
       </div>
 
       <div className="panel rounded p-4">
-        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-4">Параметры бота</div>
+        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-4">AI Параметры</div>
         <div className="grid grid-cols-2 gap-4">
           {[
-            { label: "Мин. уверенность сигнала", value: "70", unit: "%" },
-            { label: "Макс. размер позиции", value: "5", unit: "% от депозита" },
-            { label: "Стоп-лосс по умолчанию", value: "2", unit: "%" },
-            { label: "Тейк-профит по умолчанию", value: "4", unit: "%" },
-            { label: "Макс. открытых сделок", value: "5", unit: "шт" },
-            { label: "Таймфрейм анализа", value: "1ч", unit: "" },
+            { label: "Мин. уверенность сигнала", value: "65", unit: "%" },
+            { label: "Мин. RSI для LONG", value: "30", unit: "" },
+            { label: "Макс. RSI для SHORT", value: "70", unit: "" },
+            { label: "Период обновления", value: "5", unit: "мин" },
+            { label: "ATR множитель TP", value: "3.5", unit: "x" },
+            { label: "ATR множитель SL", value: "1.4", unit: "x" },
           ].map((s, i) => (
             <div key={i}>
               <label className="text-xs text-muted-foreground block mb-1">{s.label}</label>
@@ -610,29 +880,45 @@ function Settings() {
             </div>
           ))}
         </div>
-        <button className="mt-4 text-xs px-4 py-2 bg-primary text-primary-foreground rounded font-mono hover:opacity-80 transition-opacity">
-          Сохранить настройки
-        </button>
+        <div className="flex gap-2 mt-4">
+          <button onClick={onRefresh}
+            className="text-xs px-4 py-2 bg-primary text-primary-foreground rounded font-mono hover:opacity-80 transition-opacity flex items-center gap-2">
+            <Icon name="RefreshCw" size={12} />
+            Обновить данные сейчас
+          </button>
+          <button className="text-xs px-4 py-2 border border-border text-muted-foreground rounded font-mono hover:text-foreground transition-colors">
+            Сохранить параметры
+          </button>
+        </div>
       </div>
 
       <div className="panel rounded p-4">
-        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-4">Уведомления</div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-4">AI Алгоритм</div>
+        <div className="grid grid-cols-2 gap-2 text-xs">
           {[
-            { label: "Новые сигналы", on: true },
-            { label: "Take Profit достигнут", on: true },
-            { label: "Stop Loss сработал", on: true },
-            { label: "Статус биржи", on: false },
-            { label: "Telegram уведомления", on: true },
-            { label: "Email дайджест", on: false },
-          ].map((n, i) => (
-            <div key={i} className="flex items-center justify-between py-1">
-              <span className="text-xs">{n.label}</span>
-              <div className={`w-8 h-4 rounded-full relative cursor-pointer transition-colors ${n.on ? "bg-primary" : "bg-secondary border border-border"}`}>
-                <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${n.on ? "left-4" : "left-0.5"}`} />
+            { factor: "RSI (1h + 4h)", weight: "20%", desc: "Перекупленность/перепроданность" },
+            { factor: "MACD", weight: "15%", desc: "Импульс и направление тренда" },
+            { factor: "Bollinger Bands", weight: "15%", desc: "%B позиция + Squeeze" },
+            { factor: "EMA Тренд", weight: "20%", desc: "EMA20/50 направление + сила" },
+            { factor: "Объём", weight: "10%", desc: "Подтверждение движения объёмом" },
+            { factor: "Fear & Greed", weight: "10%", desc: "Рыночный сентимент" },
+            { factor: "Дивергенции RSI", weight: "10%", desc: "Бычьи/медвежьи дивергенции" },
+          ].map((f, i) => (
+            <div key={i} className="flex items-start gap-2 p-2 bg-secondary/50 rounded">
+              <span className="badge-gold text-xs px-1.5 py-0.5 rounded font-mono shrink-0">{f.weight}</span>
+              <div>
+                <div className="font-medium">{f.factor}</div>
+                <div className="text-muted-foreground">{f.desc}</div>
               </div>
             </div>
           ))}
+          <div className="flex items-start gap-2 p-2 bg-secondary/50 rounded">
+            <span className="badge-bull text-xs px-1.5 py-0.5 rounded font-mono shrink-0">R/R</span>
+            <div>
+              <div className="font-medium">Risk/Reward</div>
+              <div className="text-muted-foreground">ATR-based TP/SL (1:2.5+)</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -641,18 +927,24 @@ function Settings() {
 
 // ─── Ticker ───────────────────────────────────────────────────────────────────
 
-function TickerTape() {
-  const items = [...PAIRS, ...PAIRS];
+function TickerTape({ pairs }: { pairs: PairData[] }) {
+  const items = pairs.length > 0 ? [...pairs, ...pairs] : [
+    { symbol: "BTC/USDT", price: 0, change: 0 },
+    { symbol: "ETH/USDT", price: 0, change: 0 },
+  ].flatMap(p => [p, p]) as PairData[];
+
   return (
-    <div className="overflow-hidden border-b border-border" style={{ background: "hsl(220 13% 7%)" }}>
+    <div className="overflow-hidden border-b border-border shrink-0" style={{ background: "hsl(220 13% 7%)" }}>
       <div className="ticker-scroll inline-flex gap-8 py-1.5 px-4">
         {items.map((p, i) => (
           <div key={i} className="flex items-center gap-2 whitespace-nowrap">
             <span className="font-mono text-xs text-muted-foreground">{p.symbol}</span>
-            <span className="font-mono text-xs">{p.price < 1 ? p.price.toFixed(4) : p.price.toLocaleString()}</span>
-            <span className={`font-mono text-xs ${p.change > 0 ? "bull" : "bear"}`}>
-              {p.change > 0 ? "▲" : "▼"} {Math.abs(p.change)}%
-            </span>
+            <span className="font-mono text-xs">{p.price > 0 ? fmtPrice(p.price) : "..."}</span>
+            {p.price > 0 && (
+              <span className={`font-mono text-xs ${p.change >= 0 ? "bull" : "bear"}`}>
+                {p.change >= 0 ? "▲" : "▼"} {Math.abs(p.change).toFixed(2)}%
+              </span>
+            )}
           </div>
         ))}
       </div>
@@ -660,7 +952,7 @@ function TickerTape() {
   );
 }
 
-// ─── Nav ──────────────────────────────────────────────────────────────────────
+// ─── Main App ─────────────────────────────────────────────────────────────────
 
 const NAV = [
   { id: "dashboard", label: "Дашборд", icon: "LayoutDashboard" },
@@ -673,19 +965,74 @@ const NAV = [
 
 export default function Index() {
   const [active, setActive] = useState("dashboard");
-  const unread = NOTIFICATIONS_DATA.filter(n => !n.read).length;
+  const [market, setMarket] = useState<MarketState>({ pairs: [], updatedAt: "", loading: true });
+  const [signals, setSignals] = useState<SignalsState>({ signals: [], fearGreed: { value: 50, classification: "Neutral" }, loading: true, generatedAt: "" });
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
-  const section = () => {
+  const fetchMarket = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_MARKET}?action=all`);
+      const data = await res.json();
+      if (data.pairs) {
+        setMarket({ pairs: data.pairs, updatedAt: data.updated_at || "", loading: false });
+      }
+    } catch {
+      setMarket(prev => ({ ...prev, loading: false }));
+    }
+  }, []);
+
+  const fetchSignals = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_SIGNALS}?action=generate`);
+      const data = await res.json();
+      if (data.signals !== undefined) {
+        setSignals({
+          signals: data.signals || [],
+          fearGreed: data.fear_greed || { value: 50, classification: "Neutral" },
+          loading: false,
+          generatedAt: data.generated_at || ""
+        });
+      }
+    } catch {
+      setSignals(prev => ({ ...prev, loading: false }));
+    }
+  }, []);
+
+  const refresh = useCallback(() => {
+    setMarket(prev => ({ ...prev, loading: true }));
+    setSignals(prev => ({ ...prev, loading: true }));
+    setLastUpdate(new Date());
+    fetchMarket();
+    fetchSignals();
+  }, [fetchMarket, fetchSignals]);
+
+  // Initial load
+  useEffect(() => {
+    fetchMarket();
+    fetchSignals();
+  }, []);
+
+  // Auto-refresh every 5 minutes
+  useEffect(() => {
+    const t = setInterval(refresh, 5 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [refresh]);
+
+  const unread = signals.signals.length;
+
+  const renderSection = () => {
     switch (active) {
-      case "dashboard": return <Dashboard />;
-      case "signals": return <Signals />;
+      case "dashboard": return <Dashboard market={market} signals={signals} />;
+      case "signals": return <Signals signals={signals} />;
       case "history": return <History />;
-      case "notifications": return <NotificationsSection />;
-      case "analytics": return <Analytics />;
-      case "settings": return <Settings />;
-      default: return <Dashboard />;
+      case "notifications": return <NotificationsSection signals={signals} />;
+      case "analytics": return <Analytics market={market} signals={signals} />;
+      case "settings": return <Settings onRefresh={refresh} />;
+      default: return <Dashboard market={market} signals={signals} />;
     }
   };
+
+  const btc = market.pairs[0];
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">
@@ -696,28 +1043,44 @@ export default function Index() {
             <div className="w-5 h-5 rounded bg-primary flex items-center justify-center">
               <Icon name="Bot" size={12} className="text-primary-foreground" />
             </div>
-            <span className="font-mono font-semibold text-sm tracking-tight">TradeBot</span>
+            <span className="font-mono font-semibold text-sm tracking-tight">TradeBot AI</span>
           </div>
           <div className="w-px h-4 bg-border" />
-          <span className="text-xs text-muted-foreground font-mono">Терминал v1.0</span>
+          <span className="text-xs text-muted-foreground font-mono">World-Class Signal Engine</span>
         </div>
         <div className="flex items-center gap-4">
+          {btc && (
+            <>
+              <span className="font-mono text-xs">
+                BTC <span className={btc.change >= 0 ? "bull" : "bear"}>${fmtPrice(btc.price)}</span>
+              </span>
+              <div className="w-px h-4 bg-border" />
+            </>
+          )}
           <div className="flex items-center gap-2 text-xs font-mono">
-            <div className="w-1.5 h-1.5 rounded-full bg-bull blink" />
-            <span className="text-muted-foreground">3 биржи онлайн</span>
+            <div className={`w-1.5 h-1.5 rounded-full blink ${market.loading || signals.loading ? "bg-gold" : "bg-bull"}`} />
+            <span className="text-muted-foreground">
+              {market.loading || signals.loading ? "обновление..." : "данные актуальны"}
+            </span>
           </div>
           <div className="w-px h-4 bg-border" />
-          <span className="text-xs font-mono text-muted-foreground">Баланс: <span className="bull font-semibold">$24,841.30</span></span>
+          <span className="font-mono text-xs text-muted-foreground">
+            {lastUpdate.toLocaleTimeString("ru-RU")}
+          </span>
+          <button onClick={refresh} disabled={market.loading || signals.loading}
+            className="p-1.5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-foreground transition-colors disabled:opacity-40">
+            <Icon name="RefreshCw" size={12} className={market.loading || signals.loading ? "animate-spin" : ""} />
+          </button>
           <div className="w-px h-4 bg-border" />
           <button className="text-xs font-mono px-2.5 py-1 rounded border transition-colors"
             style={{ background: "hsl(158 64% 48% / 0.08)", borderColor: "hsl(158 64% 48% / 0.3)", color: "hsl(var(--bull))" }}>
-            ● БОТ АКТИВЕН
+            ● AI АКТИВЕН
           </button>
         </div>
       </header>
 
       {/* Ticker */}
-      <TickerTape />
+      <TickerTape pairs={market.pairs} />
 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
@@ -729,25 +1092,38 @@ export default function Index() {
                 className={`nav-item w-full flex items-center gap-3 px-4 py-2.5 text-left relative ${active === item.id ? "nav-active" : "text-sidebar-foreground"}`}>
                 <Icon name={item.icon} size={14} />
                 <span className="text-xs font-medium">{item.label}</span>
-                {item.id === "notifications" && unread > 0 && (
+                {item.id === "notifications" && unread > 0 && !signals.loading && (
                   <span className="ml-auto text-xs font-mono bg-primary text-primary-foreground rounded-full w-4 h-4 flex items-center justify-center leading-none">
-                    {unread}
+                    {Math.min(unread, 9)}
                   </span>
+                )}
+                {item.id === "signals" && signals.loading && (
+                  <div className="ml-auto w-3 h-3 border border-primary border-t-transparent rounded-full animate-spin" />
                 )}
               </button>
             ))}
           </nav>
           <div className="border-t border-border p-3">
             <div className="text-xs text-muted-foreground font-mono space-y-1">
-              <div className="flex justify-between"><span>Сигналов:</span><span className="text-foreground">12/день</span></div>
-              <div className="flex justify-between"><span>Win rate:</span><span className="bull">72.3%</span></div>
+              <div className="flex justify-between">
+                <span>Сигналов:</span>
+                <span className="text-foreground">{signals.loading ? "..." : signals.signals.length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>F&G:</span>
+                <span style={{ color: fgColor(signals.fearGreed.value) }}>{signals.loading ? "..." : signals.fearGreed.value}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Пар:</span>
+                <span className="text-foreground">{market.loading ? "..." : market.pairs.length}</span>
+              </div>
             </div>
           </div>
         </aside>
 
         {/* Main */}
         <main className="flex-1 overflow-hidden p-4">
-          {section()}
+          {renderSection()}
         </main>
       </div>
     </div>
