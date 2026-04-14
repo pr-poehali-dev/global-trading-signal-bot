@@ -10,6 +10,7 @@ import math
 import os
 import psycopg2
 from datetime import datetime
+import urllib.parse
 
 HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -50,6 +51,44 @@ EXCHANGES = {
 POSITION_PCT = 0.08   # 8% от баланса на сделку
 MAX_DRAWDOWN = 0.10   # 10% от пика → защитный режим
 SAFETY_BUFFER = 0.15  # Держим 15% баланса как подушку
+
+def send_telegram(text: str):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return
+    try:
+        data = json.dumps({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data=data, headers={"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+def notify_new_signal(sig: dict):
+    lev = sig.get("leverage", 1)
+    pos = sig.get("position_size", 0)
+    emoji = "🟢" if sig["type"] == "LONG" else "🔴"
+    send_telegram(
+        f"{emoji} <b>Новый сигнал: {sig['pair']}</b>\n"
+        f"Направление: <b>{sig['type']}</b> · Биржа: {sig['exchange']}\n"
+        f"Уверенность AI: <b>{sig['confidence']}%</b>\n"
+        f"Плечо: <b>{lev}x</b> · Позиция: <b>${pos}</b>\n"
+        f"▫️ Вход: {sig['entry']}\n"
+        f"🎯 Цель: {sig['target']}\n"
+        f"🛑 Стоп: {sig['stop']}\n"
+        f"R/R: {sig.get('risk_reward', '—')} · Потенциал: +{sig.get('potential_pct', 0)}%"
+    )
+
+def notify_close_signal(pair: str, result: str, pct: float, pnl_usdt: float, balance: float):
+    emoji = "✅" if result == "win" else "❌"
+    send_telegram(
+        f"{emoji} <b>Сигнал закрыт: {pair}</b>\n"
+        f"Результат: <b>{result.upper()}</b> · {'+' if pct >= 0 else ''}{pct:.2f}%\n"
+        f"P&L: <b>{'+' if pnl_usdt >= 0 else ''}${pnl_usdt:.2f}</b>\n"
+        f"💰 Баланс портфеля: <b>${balance:.2f}</b>"
+    )
 
 MIN_CONFIDENCE = 90
 
@@ -629,6 +668,8 @@ def auto_close_signals():
             """, (exit_p, result, round(result_pct_leveraged, 2), pnl_usdt, sig_id))
             conn2.commit(); cur2.close(); conn2.close()
             update_portfolio(pnl_usdt, result == "win")
+            p = get_portfolio()
+            notify_close_signal(pair, result, round(result_pct_leveraged, 2), pnl_usdt, p.get("balance", 0))
     except Exception:
         pass
 
@@ -682,6 +723,7 @@ def handler(event: dict, context) -> dict:
             db_id = save_signal(sig, portfolio)
             if db_id:
                 sig["db_id"] = db_id
+                notify_new_signal(sig)
             signals.append(sig)
 
     signals.sort(key=lambda x: x["confidence"], reverse=True)

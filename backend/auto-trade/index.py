@@ -13,9 +13,9 @@ TRADE_MODES = {
     "medium": {"position_pct":0.05,"leverage":2,"max_sim":3,"min_conf":90,
                "daily_target":0.05,"max_daily_loss":0.03,
                "desc":"Безопасный: 5% депозита, 2x плечо, макс 3 сделки, цель +5%/день"},
-    "hard":   {"position_pct":0.15,"leverage":5,"max_sim":5,"min_conf":92,
+    "hard":   {"position_pct":0.20,"leverage":5,"max_sim":5,"min_conf":85,
                "daily_target":0.15,"max_daily_loss":0.05,
-               "desc":"Агрессивный: 15% депозита, 5x плечо, макс 5 сделок, цель +15%/день"}
+               "desc":"Агрессивный: 20% депозита, 5x плечо, макс 5 сделок, порог 85%, цель +15%/день"}
 }
 
 def db():
@@ -88,7 +88,8 @@ def save_exchange_config(exchange, mode, max_pos, active):
     try:
         conn = db(); cur = conn.cursor()
         cur.execute(f"""INSERT INTO {SCHEMA}.exchange_connections(exchange_name,trade_mode,max_position_usdt,is_active)
-            VALUES(%s,%s,%s,%s) ON CONFLICT DO NOTHING""",(exchange,mode,max_pos,active))
+            VALUES(%s,%s,%s,%s)
+            ON CONFLICT(exchange_name) DO UPDATE SET trade_mode=EXCLUDED.trade_mode, max_position_usdt=EXCLUDED.max_position_usdt, is_active=EXCLUDED.is_active""",(exchange,mode,max_pos,active))
         conn.commit(); cur.close(); conn.close()
     except Exception: pass
 

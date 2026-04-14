@@ -1,0 +1,2 @@
+ALTER TABLE t_p73206386_global_trading_signa.exchange_connections
+    ADD CONSTRAINT exchange_connections_exchange_name_unique UNIQUE (exchange_name);

@@ -1056,7 +1056,24 @@ function AutoTradeSection({ signals }: { signals: SignalsState }) {
       setBotStats(d);
       setLoading(false);
     }).catch(() => setLoading(false));
+    fetch(`${API_TRADE}?action=config`).then(r => r.json()).then(d => {
+      if (d.configs && d.configs.length > 0) {
+        setConfigs(prev => {
+          const newCfg = {...prev};
+          d.configs.forEach((c: any) => { newCfg[c.exchange] = { mode: c.mode, active: c.active, max_pos: c.max_position }; });
+          return newCfg;
+        });
+      }
+    }).catch(() => {});
   }, []);
+
+  const saveConfig = async (exchange: string, mode: string, active: boolean, max_pos: number) => {
+    await fetch(API_TRADE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "save_config", exchange, mode, max_position: max_pos, active }),
+    });
+  };
 
   const checkBalance = async (exchange: string) => {
     const res = await fetch(`${API_TRADE}?action=balance&exchange=${exchange}`).then(r => r.json());
@@ -1082,7 +1099,7 @@ function AutoTradeSection({ signals }: { signals: SignalsState }) {
 
   const MODES = {
     medium: { label: "MEDIUM", color: "badge-gold", desc: "5% депозита · 2x плечо · макс 3 сделки · порог 90% · цель +5%/день" },
-    hard:   { label: "HARD",   color: "badge-bear",  desc: "15% депозита · 5x плечо · макс 5 сделок · порог 92% · цель +15%/день" },
+    hard:   { label: "HARD",   color: "badge-bear",  desc: "20% депозита · 5x плечо · макс 5 сделок · порог 85% · цель +15%/день" },
   };
 
   return (
@@ -1139,7 +1156,7 @@ function AutoTradeSection({ signals }: { signals: SignalsState }) {
                 <label className="flex items-center gap-2 cursor-pointer">
                   <span className="text-xs text-muted-foreground">Вкл.</span>
                   <div
-                    onClick={() => setConfigs(prev => ({ ...prev, [exch]: { ...prev[exch], active: !prev[exch].active } }))}
+                    onClick={() => { const newActive = !cfg.active; setConfigs(prev => ({ ...prev, [exch]: { ...prev[exch], active: newActive } })); saveConfig(exch, cfg.mode, newActive, cfg.max_pos); }}
                     className={`w-9 h-5 rounded-full transition-colors relative cursor-pointer ${cfg.active ? "bg-primary" : "bg-secondary"}`}>
                     <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all ${cfg.active ? "left-4" : "left-0.5"}`} />
                   </div>
@@ -1149,7 +1166,7 @@ function AutoTradeSection({ signals }: { signals: SignalsState }) {
               {/* Mode selector */}
               <div className="flex gap-2">
                 {["medium", "hard"].map(m => (
-                  <button key={m} onClick={() => setConfigs(prev => ({ ...prev, [exch]: { ...prev[exch], mode: m } }))}
+                  <button key={m} onClick={() => { setConfigs(prev => ({ ...prev, [exch]: { ...prev[exch], mode: m } })); saveConfig(exch, m, cfg.active, cfg.max_pos); }}
                     className={`flex-1 text-xs py-1.5 rounded border font-mono font-bold transition-colors ${cfg.mode === m ? MODES[m as keyof typeof MODES].color : "border-border text-muted-foreground hover:border-foreground"}`}>
                     {MODES[m as keyof typeof MODES].label}
                   </button>
