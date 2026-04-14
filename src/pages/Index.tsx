@@ -1152,7 +1152,7 @@ function AutoTradeSection({ signals }: { signals: SignalsState }) {
             <div className="text-sm">
               {autoMode
                 ? <>Каждые 5 мин: анализ → сделки → Telegram. {nextRun && <span className="font-mono text-muted-foreground">Следующий цикл: {nextRun}</span>}</>
-                : "Включи — бот будет сам торговать, пока открыт сайт"}
+                : "Бот торгует 24/7 независимо от того, открыт сайт или нет"}
             </div>
             {autoMode && runCount > 0 && (
               <div className="text-xs text-muted-foreground font-mono mt-1">Циклов выполнено: {runCount}</div>

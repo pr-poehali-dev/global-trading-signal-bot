@@ -24,7 +24,8 @@ SCHEMA = "t_p73206386_global_trading_signa"
 PAIRS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "INJUSDT", "SUIUSDT",
-    "ARBUSDT", "FETUSDT",
+    "ARBUSDT", "FETUSDT", "NEARUSDT", "APTUSDT", "OPUSDT",
+    "WLDUSDT", "RENDERUSDT", "TIAUSDT", "ATOMUSDT", "LTCUSDT",
 ]
 
 EXCHANGES = {
@@ -88,7 +89,7 @@ def notify_close_signal(pair: str, result: str, pct: float, pnl_usdt: float, bal
         f"💰 Баланс портфеля: <b>${balance:.2f}</b>"
     )
 
-MIN_CONFIDENCE = 90
+MIN_CONFIDENCE = 70
 
 def fetch_url(url: str):
     try:
