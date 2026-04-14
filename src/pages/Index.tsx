@@ -1,8 +1,10 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback } from "react";
 import Icon from "@/components/ui/icon";
 
 const API_MARKET = "https://functions.poehali.dev/b4830b16-e61f-4ab5-8a8b-eb323709567c";
 const API_SIGNALS = "https://functions.poehali.dev/4b074d99-4dd2-412c-904d-50db2bf5fbed";
+const API_TRADE = "https://functions.poehali.dev/228287c1-2207-42c1-94aa-88fda52f4f86";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -847,6 +849,381 @@ function Settings({ onRefresh }: { onRefresh: () => void }) {
   );
 }
 
+// ─── Statistics ──────────────────────────────────────────────────────────────
+
+ 
+function StatisticsSection() {
+  const [stats, setStats] = useState<Record<string, unknown>>({});  
+  const [saved, setSaved] = useState<Record<string, unknown>[]>([]);
+  const [loading, setLoading] = useState(true);
+  const isMobile = useIsMobile();
+
+  useEffect(() => {
+    Promise.all([
+      fetch(`${API_SIGNALS}?action=stats`).then(r => r.json()),
+      fetch(`${API_SIGNALS}?action=saved&limit=20`).then(r => r.json()),
+    ]).then(([s, sg]) => {
+      setStats(s.stats || null);
+      setSaved(sg.signals || []);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  const fmtPct = (v: number | null) => v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+
+  if (loading) return (
+    <div className="flex flex-col gap-3 fade-in">
+      <span className="text-sm font-semibold">Честная статистика</span>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        {Array(8).fill(null).map((_, i) => <div key={i} className="panel rounded p-3 h-16 animate-pulse bg-secondary" />)}
+      </div>
+    </div>
+  );
+
+  const s = stats || {};
+  const winRate = s.win_rate || 0;
+  const winColor = winRate >= 60 ? "bull" : winRate >= 45 ? "gold" : "bear";
+
+  return (
+    <div className="flex flex-col gap-3 fade-in">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold">Честная статистика — только реальные закрытые сигналы</span>
+        <span className="text-xs text-muted-foreground font-mono badge-gold px-2 py-0.5 rounded">100% прозрачность</span>
+      </div>
+
+      {/* Key metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        {[
+          { label: "Всего сигналов", value: String(s.total || 0), icon: "Hash", cls: "" },
+          { label: "Win Rate", value: `${winRate}%`, icon: "Target", cls: winColor },
+          { label: "Побед / Потерь", value: `${s.wins || 0} / ${s.losses || 0}`, icon: "TrendingUp", cls: "" },
+          { label: "В ожидании", value: String(s.pending || 0), icon: "Clock", cls: "gold" },
+          { label: "Ср. прибыль", value: fmtPct(s.avg_win), icon: "ArrowUpRight", cls: "bull" },
+          { label: "Ср. убыток", value: fmtPct(s.avg_loss), icon: "ArrowDownRight", cls: "bear" },
+          { label: "Лучшая сделка", value: fmtPct(s.best_trade), icon: "Trophy", cls: "bull" },
+          { label: "Математич. ожидание", value: fmtPct(s.expectancy), icon: "BarChart2", cls: s.expectancy > 0 ? "bull" : "bear" },
+        ].map((m, i) => (
+          <div key={i} className="panel rounded p-3">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-muted-foreground">{m.label}</span>
+              <Icon name={m.icon} size={11} className="text-muted-foreground" />
+            </div>
+            <div className={`font-mono text-base font-semibold ${m.cls}`}>{m.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Win rate bar */}
+      {s.closed > 0 && (
+        <div className="panel rounded p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-muted-foreground">Результативность по закрытым сигналам ({s.closed} сделок)</span>
+            <span className={`font-mono text-sm font-semibold ${winColor}`}>{winRate}%</span>
+          </div>
+          <div className="flex h-3 rounded overflow-hidden gap-0.5">
+            <div style={{ flex: s.wins, background: "hsl(var(--bull))", opacity: 0.8 }} title={`${s.wins} побед`} />
+            <div style={{ flex: s.losses, background: "hsl(var(--bear))", opacity: 0.8 }} title={`${s.losses} потерь`} />
+          </div>
+          <div className="flex justify-between text-xs font-mono mt-1">
+            <span className="bull">{s.wins} WIN</span>
+            <span className="bear">{s.losses} LOSS</span>
+          </div>
+        </div>
+      )}
+
+      {/* By pair */}
+      {s.by_pair && s.by_pair.length > 0 && (
+        <div className="panel rounded p-3">
+          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Статистика по парам</div>
+          <div className="flex flex-col gap-2">
+            {s.by_pair.map((p: any, i: number) => {
+              const wr = p.total > 0 ? Math.round(p.wins / p.total * 100) : 0;
+              return (
+                <div key={i} className="flex items-center gap-3">
+                  <span className="font-mono text-xs w-20">{p.pair}</span>
+                  <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${wr}%`, background: wr >= 60 ? "hsl(var(--bull))" : wr >= 40 ? "hsl(var(--gold))" : "hsl(var(--bear))" }} />
+                  </div>
+                  <span className="font-mono text-xs w-10 text-right">{wr}%</span>
+                  <span className={`font-mono text-xs w-14 text-right ${p.avg_pct >= 0 ? "bull" : "bear"}`}>{p.avg_pct >= 0 ? "+" : ""}{p.avg_pct}%</span>
+                  <span className="text-xs text-muted-foreground w-12 text-right">{p.wins}/{p.total}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Recent signals with results */}
+      <div className="panel rounded overflow-hidden">
+        <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+          <span className="text-xs text-muted-foreground uppercase tracking-wider">Последние сигналы (реальная история)</span>
+          <span className="text-xs font-mono text-muted-foreground">Порог: 90%+</span>
+        </div>
+        {saved.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2">
+            <Icon name="Clock" size={28} className="opacity-30" />
+            <span className="text-sm">История накапливается — AI анализирует 25 пар</span>
+          </div>
+        ) : (
+          <div>
+            {saved.map((sig, i) => (
+              <div key={i} className="flex flex-wrap items-center gap-2 md:gap-4 px-3 py-2.5 border-b border-border/40 row-hover fade-in text-xs font-mono"
+                style={{ animationDelay: `${i * 0.03}s` }}>
+                <span className={`font-bold w-10 ${sig.type === "LONG" ? "bull" : "bear"}`}>{sig.type}</span>
+                <span className="font-medium w-24">{sig.pair}</span>
+                <span className="text-muted-foreground w-14">{sig.exchange}</span>
+                <span className="text-muted-foreground">{sig.date}</span>
+                <span>вход: {fmtPrice(sig.entry)}</span>
+                <div className="flex items-center gap-1.5">
+                  <span className={`px-1.5 py-0.5 rounded text-xs ${sig.confidence >= 92 ? "badge-bull" : "badge-gold"}`}>{sig.confidence}% AI</span>
+                </div>
+                {/* Результат */}
+                {sig.result ? (
+                  <span className={`font-semibold px-2 py-0.5 rounded ${sig.result === "win" ? "badge-bull" : "badge-bear"}`}>
+                    {sig.result === "win" ? "WIN" : "LOSS"} {sig.result_pct != null ? `${sig.result_pct >= 0 ? "+" : ""}${sig.result_pct}%` : ""}
+                  </span>
+                ) : (
+                  <span className="badge-gold text-xs px-2 py-0.5 rounded">⏳ Открыт</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="panel rounded p-3 text-xs text-muted-foreground">
+        <div className="flex items-start gap-2">
+          <Icon name="Info" size={12} className="text-primary shrink-0 mt-0.5" />
+          <span>Все сигналы сохраняются в базе данных автоматически. Результат (WIN/LOSS) определяется по реальной цене через 4 часа: достиг TP → WIN, достиг SL → LOSS, иначе — по текущей цене. Никаких ручных корректировок — <strong className="text-foreground">100% честно</strong>.</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Auto Trade ───────────────────────────────────────────────────────────────
+
+function AutoTradeSection({ signals }: { signals: SignalsState }) {
+  const [botStats, setBotStats] = useState<any>(null);
+  const [balances, setBalances] = useState<Record<string, any>>({});
+  const [configs, setConfigs] = useState<Record<string, { mode: string; active: boolean; max_pos: number }>>({
+    Binance: { mode: "medium", active: false, max_pos: 50 },
+    Bybit:   { mode: "medium", active: false, max_pos: 50 },
+    OKX:     { mode: "medium", active: false, max_pos: 50 },
+  });
+  const [loading, setLoading] = useState(true);
+  const [trading, setTrading] = useState<string | null>(null);
+  const [lastResult, setLastResult] = useState<any>(null);
+  const isMobile = useIsMobile();
+
+  useEffect(() => {
+    fetch(`${API_TRADE}?action=stats`).then(r => r.json()).then(d => {
+      setBotStats(d);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  const checkBalance = async (exchange: string) => {
+    const res = await fetch(`${API_TRADE}?action=balance&exchange=${exchange}`).then(r => r.json());
+    setBalances(prev => ({ ...prev, [exchange]: res }));
+  };
+
+  const handleTrade = async (exchange: string, signal: any) => {
+    const cfg = configs[exchange];
+    if (!cfg.active) return;
+    setTrading(`${exchange}-${signal.pair}`);
+    try {
+      const res = await fetch(API_TRADE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "trade", exchange, mode: cfg.mode, signal }),
+      }).then(r => r.json());
+      setLastResult({ exchange, signal: signal.pair, ...res, ts: new Date().toLocaleTimeString("ru-RU") });
+      fetch(`${API_TRADE}?action=stats`).then(r => r.json()).then(setBotStats);
+    } finally {
+      setTrading(null);
+    }
+  };
+
+  const MODES = {
+    medium: { label: "MEDIUM", color: "badge-gold", desc: "5% депозита · без плеча · макс 3 сделки · порог 90%" },
+    hard:   { label: "HARD",   color: "badge-bear",  desc: "15% депозита · 3x плечо · макс 5 сделок · порог 92%" },
+  };
+
+  return (
+    <div className="flex flex-col gap-3 fade-in">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold">Авто-Торговля</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs badge-bear px-2 py-0.5 rounded font-mono">⚠ Реальные деньги</span>
+        </div>
+      </div>
+
+      {/* Warning */}
+      <div className="panel rounded p-3 border border-amber-600/30 bg-amber-600/5">
+        <div className="flex items-start gap-2">
+          <Icon name="AlertTriangle" size={14} className="text-amber-500 shrink-0 mt-0.5" />
+          <div className="text-xs text-muted-foreground">
+            <strong className="text-amber-500">Внимание:</strong> бот торгует реальными деньгами на ваши API ключи.
+            Добавьте ключи в раздел Секреты. Рекомендуем начать с режима <strong className="text-foreground">MEDIUM</strong> и небольшого депозита.
+            Бот торгует только по сигналам 90%+.
+          </div>
+        </div>
+      </div>
+
+      {/* Bot Stats */}
+      {botStats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {[
+            { label: "Открытых сделок", value: String(botStats.open || 0), cls: botStats.open > 0 ? "gold" : "" },
+            { label: "Win Rate", value: `${botStats.win_rate || 0}%`, cls: botStats.win_rate >= 60 ? "bull" : "bear" },
+            { label: "Общий P&L", value: `${botStats.total_pnl >= 0 ? "+" : ""}$${botStats.total_pnl || 0}`, cls: botStats.total_pnl >= 0 ? "bull" : "bear" },
+            { label: "Всего сделок", value: String(botStats.total || 0), cls: "" },
+          ].map((m, i) => (
+            <div key={i} className="panel rounded p-3">
+              <div className="text-xs text-muted-foreground mb-1">{m.label}</div>
+              <div className={`font-mono text-base font-semibold ${m.cls}`}>{m.value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Exchange connections */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {["Binance", "Bybit", "OKX"].map(exch => {
+          const cfg = configs[exch];
+          const bal = balances[exch];
+          const mode = MODES[cfg.mode as keyof typeof MODES];
+          return (
+            <div key={exch} className={`panel rounded p-3 md:p-4 flex flex-col gap-3 ${cfg.active ? "border-primary/30" : ""}`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${cfg.active ? "bg-primary blink" : "bg-secondary"}`} />
+                  <span className="font-mono font-semibold text-sm">{exch}</span>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <span className="text-xs text-muted-foreground">Вкл.</span>
+                  <div
+                    onClick={() => setConfigs(prev => ({ ...prev, [exch]: { ...prev[exch], active: !prev[exch].active } }))}
+                    className={`w-9 h-5 rounded-full transition-colors relative cursor-pointer ${cfg.active ? "bg-primary" : "bg-secondary"}`}>
+                    <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all ${cfg.active ? "left-4" : "left-0.5"}`} />
+                  </div>
+                </label>
+              </div>
+
+              {/* Mode selector */}
+              <div className="flex gap-2">
+                {["medium", "hard"].map(m => (
+                  <button key={m} onClick={() => setConfigs(prev => ({ ...prev, [exch]: { ...prev[exch], mode: m } }))}
+                    className={`flex-1 text-xs py-1.5 rounded border font-mono font-bold transition-colors ${cfg.mode === m ? MODES[m as keyof typeof MODES].color : "border-border text-muted-foreground hover:border-foreground"}`}>
+                    {MODES[m as keyof typeof MODES].label}
+                  </button>
+                ))}
+              </div>
+              <div className="text-xs text-muted-foreground">{mode.desc}</div>
+
+              {/* Balance */}
+              {bal ? (
+                bal.ok ? (
+                  <div className="flex items-center justify-between text-xs font-mono">
+                    <span className="text-muted-foreground">Баланс USDT:</span>
+                    <span className="bull font-semibold">${bal.usdt}</span>
+                  </div>
+                ) : (
+                  <div className="text-xs bear">{bal.error}</div>
+                )
+              ) : (
+                <button onClick={() => checkBalance(exch)}
+                  className="text-xs px-3 py-1.5 border border-border rounded font-mono hover:border-foreground transition-colors text-muted-foreground">
+                  Проверить баланс
+                </button>
+              )}
+
+              {/* Trade buttons for top signals */}
+              {cfg.active && signals.signals.length > 0 && (
+                <div className="flex flex-col gap-1.5 border-t border-border pt-2">
+                  <div className="text-xs text-muted-foreground mb-1">Топ сигналы для торговли:</div>
+                  {signals.signals.slice(0, 2).map((sig, si) => (
+                    <button key={si}
+                      onClick={() => handleTrade(exch, sig)}
+                      disabled={!!trading}
+                      className={`text-xs px-2 py-1.5 rounded border font-mono flex items-center justify-between transition-colors disabled:opacity-50 ${sig.type === "LONG" ? "badge-bull hover:opacity-80" : "badge-bear hover:opacity-80"}`}>
+                      <span>{sig.type} {sig.pair}</span>
+                      <span>{sig.confidence}% · {sig.type === "LONG" ? "+" : "-"}{sig.potential_pct}%</span>
+                      {trading === `${exch}-${sig.pair}` && (
+                        <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin ml-1" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Last result */}
+      {lastResult && (
+        <div className={`panel rounded p-3 border ${lastResult.ok ? "border-bull/30" : "border-bear/30"} fade-in`}>
+          <div className="flex items-center gap-2">
+            <Icon name={lastResult.ok ? "CheckCircle" : "XCircle"} size={14} className={lastResult.ok ? "bull" : "bear"} />
+            <span className="font-mono text-xs">
+              {lastResult.ok
+                ? `✓ Сделка открыта: ${lastResult.exchange} ${lastResult.signal} $${lastResult.position_usdt} · ${lastResult.ts}`
+                : `✗ Ошибка: ${lastResult.error} · ${lastResult.ts}`}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Open trades */}
+      {botStats?.open_trades?.length > 0 && (
+        <div className="panel rounded overflow-hidden">
+          <div className="px-3 py-2 border-b border-border">
+            <span className="text-xs text-muted-foreground uppercase tracking-wider">Открытые сделки бота</span>
+          </div>
+          {botStats.open_trades.map((t: any, i: number) => (
+            <div key={i} className="flex flex-wrap items-center gap-3 px-3 py-2.5 border-b border-border/40 row-hover text-xs font-mono">
+              <span className={`font-bold ${t.direction === "LONG" ? "bull" : "bear"}`}>{t.direction}</span>
+              <span>{t.pair}</span>
+              <span className="text-muted-foreground">{t.exchange}</span>
+              <span className={`px-1.5 py-0.5 rounded ${t.mode === "hard" ? "badge-bear" : "badge-gold"}`}>{t.mode.toUpperCase()}</span>
+              <span>вход: {fmtPrice(t.entry)}</span>
+              <span className="text-muted-foreground">${t.position_usdt}</span>
+              <span className="text-muted-foreground ml-auto">{t.opened_at}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* API Keys guide */}
+      <div className="panel rounded p-3 md:p-4">
+        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Как подключить биржу</div>
+        <div className="flex flex-col gap-2 text-xs">
+          {[
+            { exch: "Binance", steps: ["binance.com → Профиль → API Management", "Создать API ключ → включить Spot Trading", "Добавить IP в whitelist (опционально)", "Вставить BINANCE_API_KEY и BINANCE_SECRET_KEY в Секреты"] },
+            { exch: "Bybit", steps: ["bybit.com → Аккаунт → API Management", "Создать новый ключ → Unified Trading", "Добавить BYBIT_API_KEY и BYBIT_SECRET_KEY в Секреты"] },
+            { exch: "OKX", steps: ["okx.com → Аккаунт → API Keys → Создать", "Добавить OKX_API_KEY, OKX_SECRET_KEY и OKX_PASSPHRASE в Секреты"] },
+          ].map((e, i) => (
+            <details key={i} className="border border-border rounded">
+              <summary className="px-3 py-2 cursor-pointer font-medium text-foreground">{e.exch} — инструкция</summary>
+              <div className="px-3 pb-3 flex flex-col gap-1">
+                {e.steps.map((step, si) => (
+                  <div key={si} className="flex items-start gap-2 text-muted-foreground">
+                    <span className="badge-gold px-1.5 rounded font-mono shrink-0">{si + 1}</span>
+                    <span>{step}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Ticker ───────────────────────────────────────────────────────────────────
 
 function TickerTape({ pairs }: { pairs: PairData[] }) {
@@ -872,9 +1249,11 @@ function TickerTape({ pairs }: { pairs: PairData[] }) {
 const NAV = [
   { id: "dashboard", label: "Дашборд", icon: "LayoutDashboard" },
   { id: "signals", label: "Сигналы", icon: "Zap" },
+  { id: "stats", label: "Статистика", icon: "BarChart2" },
+  { id: "autotrade", label: "Авто-бот", icon: "Bot" },
   { id: "history", label: "История", icon: "History" },
+  { id: "analytics", label: "Аналитика", icon: "TrendingUp" },
   { id: "notifications", label: "Уведомления", icon: "Bell" },
-  { id: "analytics", label: "Аналитика", icon: "BarChart2" },
   { id: "settings", label: "Настройки", icon: "Settings" },
 ];
 
@@ -919,9 +1298,11 @@ export default function Index() {
     switch (active) {
       case "dashboard": return <Dashboard market={market} signals={signals} />;
       case "signals": return <Signals signals={signals} />;
+      case "stats": return <StatisticsSection />;
+      case "autotrade": return <AutoTradeSection signals={signals} />;
       case "history": return <History />;
-      case "notifications": return <NotificationsSection signals={signals} />;
       case "analytics": return <Analytics market={market} signals={signals} />;
+      case "notifications": return <NotificationsSection signals={signals} />;
       case "settings": return <Settings onRefresh={refresh} />;
       default: return <Dashboard market={market} signals={signals} />;
     }

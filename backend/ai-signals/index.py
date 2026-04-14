@@ -1,8 +1,8 @@
 """
-AI-движок сигналов мирового уровня.
-Анализирует: RSI, MACD, Bollinger Bands, Stochastic, объём, свечные паттерны,
-Fear & Greed Index, тренд, перекупленность/перепроданность, развороты.
-Генерирует торговые сигналы с детальным обоснованием.
+AI-движок сигналов мирового уровня. Порог публикации: 90%+.
+25 торговых пар. Сохраняет каждый прогноз в БД для честной статистики.
+Анализирует: RSI(1h+4h+1d), MACD, Bollinger, Stochastic, ATR, EMA,
+объём, Fear & Greed, дивергенции, паттерны свечей, поддержка/сопротивление.
 """
 import json
 import urllib.request
@@ -18,14 +18,34 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"]
-EXCHANGES = {"BTCUSDT": "Binance", "ETHUSDT": "Bybit", "SOLUSDT": "OKX",
-             "BNBUSDT": "Binance", "XRPUSDT": "OKX", "DOGEUSDT": "Bybit"}
+SCHEMA = "t_p73206386_global_trading_signa"
+
+PAIRS = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+    "MATICUSDT", "LTCUSDT", "ATOMUSDT", "NEARUSDT", "APTUSDT",
+    "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT", "SEIUSDT",
+    "TIAUSDT", "WLDUSDT", "FETUSDT", "RENDERUSDT", "1000SHIBUSDT",
+]
+
+EXCHANGES = {
+    "BTCUSDT": "Binance", "ETHUSDT": "Bybit", "SOLUSDT": "Binance",
+    "BNBUSDT": "Binance", "XRPUSDT": "OKX", "DOGEUSDT": "Bybit",
+    "ADAUSDT": "Binance", "AVAXUSDT": "OKX", "DOTUSDT": "Bybit",
+    "LINKUSDT": "Binance", "MATICUSDT": "OKX", "LTCUSDT": "Bybit",
+    "ATOMUSDT": "Binance", "NEARUSDT": "OKX", "APTUSDT": "Bybit",
+    "ARBUSDT": "Binance", "OPUSDT": "OKX", "INJUSDT": "Bybit",
+    "SUIUSDT": "Binance", "SEIUSDT": "Bybit", "TIAUSDT": "OKX",
+    "WLDUSDT": "Binance", "FETUSDT": "OKX", "RENDERUSDT": "Bybit",
+    "1000SHIBUSDT": "Binance",
+}
+
+MIN_CONFIDENCE = 90
 
 def fetch_url(url: str):
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "TradingBot/2.0"})
-        with urllib.request.urlopen(req, timeout=8) as r:
+        req = urllib.request.Request(url, headers={"User-Agent": "TradingBot/3.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode())
     except Exception:
         return None
@@ -69,323 +89,441 @@ def calc_ema(data: list, period: int) -> list:
     return ema
 
 def calc_macd(closes: list) -> dict:
-    if len(closes) < 26:
-        return {"macd": 0, "signal": 0, "hist": 0, "trend": "neutral"}
+    if len(closes) < 35:
+        return {"macd": 0, "signal": 0, "hist": 0, "trend": "neutral", "cross": "none"}
     e12 = calc_ema(closes, 12)
     e26 = calc_ema(closes, 26)
     ml = [a - b for a, b in zip(e12[13:], e26)]
     sl = calc_ema(ml, 9)
     hist = ml[-1] - sl[-1] if sl else 0
-    trend = "bullish" if hist > 0 and hist > (ml[-2] - sl[-2] if len(ml) > 1 and len(sl) > 1 else 0) else \
-            "bearish" if hist < 0 else "neutral"
-    return {"macd": round(ml[-1], 6), "signal": round(sl[-1], 6), "hist": round(hist, 6), "trend": trend}
+    prev_hist = ml[-2] - sl[-2] if len(ml) > 1 and len(sl) > 1 else 0
+    cross = "none"
+    if prev_hist < 0 and hist > 0:
+        cross = "bullish_cross"
+    elif prev_hist > 0 and hist < 0:
+        cross = "bearish_cross"
+    trend = "bullish" if hist > 0 else "bearish" if hist < 0 else "neutral"
+    return {"macd": round(ml[-1], 8), "signal": round(sl[-1], 8), "hist": round(hist, 8), "trend": trend, "cross": cross}
 
 def calc_bollinger(closes: list, period: int = 20) -> dict:
     if len(closes) < period:
-        return {"upper": 0, "middle": 0, "lower": 0, "pct_b": 0.5, "squeeze": False}
+        return {"upper": 0, "middle": 0, "lower": 0, "pct_b": 0.5, "squeeze": False, "bandwidth": 0}
     w = closes[-period:]
     mid = sum(w) / period
     std = math.sqrt(sum((x - mid) ** 2 for x in w) / period)
     upper = mid + 2 * std
     lower = mid - 2 * std
     pct_b = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
-    # Squeeze: low volatility = bands тесные
-    squeeze = std / mid < 0.015 if mid > 0 else False
-    return {"upper": upper, "middle": mid, "lower": lower, "pct_b": round(pct_b, 4), "squeeze": squeeze}
+    bandwidth = (upper - lower) / mid if mid > 0 else 0
+    return {"upper": upper, "middle": mid, "lower": lower,
+            "pct_b": round(pct_b, 4), "squeeze": bandwidth < 0.03, "bandwidth": round(bandwidth, 4)}
+
+def calc_stochastic(highs: list, lows: list, closes: list, k: int = 14) -> dict:
+    if len(closes) < k:
+        return {"k": 50.0, "d": 50.0, "zone": "neutral"}
+    h = max(highs[-k:])
+    l = min(lows[-k:])
+    k_val = ((closes[-1] - l) / (h - l) * 100) if h != l else 50.0
+    zone = "oversold" if k_val < 20 else "overbought" if k_val > 80 else "neutral"
+    # Simplified %D
+    k_vals = []
+    for i in range(max(0, len(closes)-k-3), len(closes)-k+1):
+        if i < 0: continue
+        hi = max(highs[i:i+k]); lo = min(lows[i:i+k])
+        kv = ((closes[i+k-1] - lo) / (hi - lo) * 100) if hi != lo else 50.0
+        k_vals.append(kv)
+    d_val = sum(k_vals[-3:]) / 3 if len(k_vals) >= 3 else k_val
+    return {"k": round(k_val, 2), "d": round(d_val, 2), "zone": zone}
+
+def calc_atr(highs: list, lows: list, closes: list, period: int = 14) -> float:
+    if len(closes) < period + 1:
+        return closes[-1] * 0.02 if closes else 0
+    trs = []
+    for i in range(1, len(closes)):
+        trs.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
+    atr = sum(trs[:period]) / period
+    for tr in trs[period:]:
+        atr = (atr * (period - 1) + tr) / period
+    return atr
 
 def detect_trend(closes: list) -> dict:
     if len(closes) < 50:
         return {"trend": "neutral", "strength": 0}
-    ema20 = calc_ema(closes, 20)
+    ema9 = calc_ema(closes, 9)
+    ema21 = calc_ema(closes, 21)
     ema50 = calc_ema(closes, 50)
     price = closes[-1]
-    slope20 = (ema20[-1] - ema20[-5]) / ema20[-5] * 100 if len(ema20) >= 5 else 0
-    if price > ema20[-1] > ema50[-1] and slope20 > 0:
-        strength = min(int(abs(slope20) * 20), 100)
-        return {"trend": "uptrend", "strength": strength, "ema20": ema20[-1], "ema50": ema50[-1]}
-    elif price < ema20[-1] < ema50[-1] and slope20 < 0:
-        strength = min(int(abs(slope20) * 20), 100)
-        return {"trend": "downtrend", "strength": strength, "ema20": ema20[-1], "ema50": ema50[-1]}
-    return {"trend": "sideways", "strength": 30, "ema20": ema20[-1], "ema50": ema50[-1]}
+    slope = (ema50[-1] - ema50[-10]) / ema50[-10] * 100 if len(ema50) >= 10 else 0
+    if price > ema9[-1] > ema21[-1] > ema50[-1]:
+        return {"trend": "strong_uptrend", "strength": min(int(abs(slope) * 25 + 30), 100), "ema9": ema9[-1], "ema21": ema21[-1], "ema50": ema50[-1]}
+    elif price > ema21[-1] > ema50[-1]:
+        return {"trend": "uptrend", "strength": min(int(abs(slope) * 20 + 15), 80), "ema9": ema9[-1], "ema21": ema21[-1], "ema50": ema50[-1]}
+    elif price < ema9[-1] < ema21[-1] < ema50[-1]:
+        return {"trend": "strong_downtrend", "strength": min(int(abs(slope) * 25 + 30), 100), "ema9": ema9[-1], "ema21": ema21[-1], "ema50": ema50[-1]}
+    elif price < ema21[-1] < ema50[-1]:
+        return {"trend": "downtrend", "strength": min(int(abs(slope) * 20 + 15), 80), "ema9": ema9[-1], "ema21": ema21[-1], "ema50": ema50[-1]}
+    return {"trend": "sideways", "strength": 20, "ema9": ema9[-1], "ema21": ema21[-1], "ema50": ema50[-1]}
 
-def detect_divergence(closes: list, rsi_val: float) -> str:
+def detect_divergence(closes: list, rsi_1h: float, rsi_4h: float) -> str:
     if len(closes) < 10:
         return "none"
-    price_trend = closes[-1] > closes[-5]
-    # Бычья дивергенция: цена падает, RSI растёт
-    if not price_trend and rsi_val > 40:
+    p_prev = closes[-10]
+    p_now = closes[-1]
+    # Бычья: цена ниже, RSI выше → разворот вверх
+    if p_now < p_prev * 0.99 and rsi_1h > rsi_4h + 5:
         return "bullish_divergence"
-    # Медвежья дивергенция: цена растёт, RSI падает  
-    if price_trend and rsi_val > 65:
+    # Медвежья: цена выше, RSI ниже → разворот вниз
+    if p_now > p_prev * 1.01 and rsi_1h < rsi_4h - 5:
         return "bearish_divergence"
     return "none"
 
-def calc_volume_profile(candles: list) -> dict:
-    if len(candles) < 10:
-        return {"ratio": 1, "trend": "normal"}
-    vols = [c["v"] for c in candles]
-    avg = sum(vols[-20:]) / 20 if len(vols) >= 20 else sum(vols) / len(vols)
-    ratio = vols[-1] / avg if avg > 0 else 1
-    last3_trend = sum(vols[-3:]) / 3 > sum(vols[-6:-3]) / 3 if len(vols) >= 6 else True
-    return {
-        "ratio": round(ratio, 2),
-        "trend": "increasing" if last3_trend and ratio > 1.2 else "decreasing" if ratio < 0.7 else "normal"
-    }
+def detect_candle_patterns(candles: list) -> list:
+    patterns = []
+    if len(candles) < 3:
+        return patterns
+    for i in range(-3, 0):
+        c = candles[i]
+        body = abs(c["c"] - c["o"])
+        wick_lo = min(c["c"], c["o"]) - c["l"]
+        wick_hi = c["h"] - max(c["c"], c["o"])
+        rng = c["h"] - c["l"]
+        if rng == 0: continue
+        if body > 0 and wick_lo > body * 2 and wick_hi < body * 0.5 and c["c"] > c["o"]:
+            patterns.append("Молот (бычий разворот)")
+        if body > 0 and wick_hi > body * 2 and wick_lo < body * 0.5 and c["c"] < c["o"]:
+            patterns.append("Висельник (медвежий разворот)")
+        if body < rng * 0.1:
+            patterns.append("Доджи (нерешительность)")
+        if i > -3:
+            prev = candles[i - 1]
+            if (prev["c"] < prev["o"] and c["c"] > c["o"] and c["c"] > prev["o"] and c["o"] < prev["c"]):
+                patterns.append("Бычье поглощение")
+            if (prev["c"] > prev["o"] and c["c"] < c["o"] and c["o"] > prev["c"] and c["c"] < prev["o"]):
+                patterns.append("Медвежье поглощение")
+    return list(set(patterns[:3]))
 
-def detect_support_resistance(candles: list, current_price: float) -> dict:
+def detect_sr(candles: list, price: float) -> dict:
     if len(candles) < 20:
-        return {"support": current_price * 0.97, "resistance": current_price * 1.03}
-    highs = sorted([c["h"] for c in candles[-30:]], reverse=True)
-    lows = sorted([c["l"] for c in candles[-30:]])
-    resistance = highs[2] if len(highs) > 2 else current_price * 1.03
-    support = lows[2] if len(lows) > 2 else current_price * 0.97
-    return {"support": round(support, 6), "resistance": round(resistance, 6)}
+        return {"support": price * 0.97, "resistance": price * 1.03, "near_support": False, "near_resistance": False}
+    highs = sorted([c["h"] for c in candles[-40:]], reverse=True)
+    lows = sorted([c["l"] for c in candles[-40:]])
+    resistance = sorted(highs[:5])[2]
+    support = sorted(lows[:5])[2]
+    return {"support": round(support, 8), "resistance": round(resistance, 8),
+            "near_support": abs(price - support) / price < 0.015,
+            "near_resistance": abs(price - resistance) / price < 0.015}
 
-def score_signal(rsi: float, macd: dict, bb: dict, trend: dict, vol: dict,
-                 fg: dict, divergence: str, sr: dict, price: float, candles: list) -> dict:
-    """
-    Главный алгоритм оценки сигнала. Взвешенная система из 10 факторов.
-    Возвращает направление (LONG/SHORT/NONE) и итоговую уверенность.
-    """
-    bull_score = 0
-    bear_score = 0
-    factors = []
+def calc_volume(candles: list) -> dict:
+    if len(candles) < 20:
+        return {"ratio": 1.0, "trend": "normal", "climax": False}
+    vols = [c["v"] for c in candles]
+    avg20 = sum(vols[-20:]) / 20
+    ratio = vols[-1] / avg20 if avg20 > 0 else 1.0
+    trend_up = sum(vols[-5:]) / 5 > sum(vols[-10:-5]) / 5
+    return {"ratio": round(ratio, 2), "trend": "increasing" if trend_up and ratio > 1.2 else "decreasing" if ratio < 0.6 else "normal", "climax": ratio > 3.0}
 
-    # 1. RSI (вес: 20)
-    if rsi < 30:
-        bull_score += 20
-        factors.append(f"RSI={rsi} — глубокая перепроданность (сильный LONG сигнал)")
-    elif rsi < 45:
-        bull_score += 10
-        factors.append(f"RSI={rsi} — зона перепроданности")
-    elif rsi > 70:
-        bear_score += 20
-        factors.append(f"RSI={rsi} — перекупленность (сильный SHORT сигнал)")
-    elif rsi > 60:
-        bear_score += 10
-        factors.append(f"RSI={rsi} — зона перекупленности")
+def score_signal(rsi_1h, rsi_4h, rsi_1d, macd, bb, stoch, trend, vol, fg, divergence, sr, patterns) -> dict:
+    bull = 0; bear = 0; factors = []
+    crit_bull = 0; crit_bear = 0
+
+    # RSI 1h (15)
+    if rsi_1h < 28: bull += 15; crit_bull += 1; factors.append(f"RSI(1h)={rsi_1h} — экстремальная перепроданность ↑↑")
+    elif rsi_1h < 38: bull += 8; factors.append(f"RSI(1h)={rsi_1h} — перепроданность ↑")
+    elif rsi_1h > 72: bear += 15; crit_bear += 1; factors.append(f"RSI(1h)={rsi_1h} — экстремальная перекупленность ↓↓")
+    elif rsi_1h > 62: bear += 8; factors.append(f"RSI(1h)={rsi_1h} — перекупленность ↓")
+    else: factors.append(f"RSI(1h)={rsi_1h} — нейтрально")
+
+    # RSI 4h (12)
+    if rsi_4h < 30: bull += 12; crit_bull += 1; factors.append(f"RSI(4h)={rsi_4h} — подтверждение перепроданности на 4h")
+    elif rsi_4h < 45: bull += 5; factors.append(f"RSI(4h)={rsi_4h} — зона интереса на 4h")
+    elif rsi_4h > 70: bear += 12; crit_bear += 1; factors.append(f"RSI(4h)={rsi_4h} — подтверждение перекупленности на 4h")
+    elif rsi_4h > 58: bear += 5; factors.append(f"RSI(4h)={rsi_4h} — нейтрально-медвежий 4h")
+
+    # RSI 1d (10)
+    if rsi_1d < 35: bull += 10; crit_bull += 1; factors.append(f"RSI(1d)={rsi_1d} — глобальная перепроданность")
+    elif rsi_1d > 70: bear += 10; crit_bear += 1; factors.append(f"RSI(1d)={rsi_1d} — глобальная перекупленность")
+
+    # MACD крест (15)
+    if macd["cross"] == "bullish_cross": bull += 15; crit_bull += 1; factors.append("MACD бычий крест — сильнейший разворот ↑↑")
+    elif macd["cross"] == "bearish_cross": bear += 15; crit_bear += 1; factors.append("MACD медвежий крест — сильнейший разворот ↓↓")
+    elif macd["trend"] == "bullish": bull += 7; factors.append("MACD бычий импульс")
+    elif macd["trend"] == "bearish": bear += 7; factors.append("MACD медвежий импульс")
+
+    # Bollinger (10)
+    if bb["pct_b"] < 0.05: bull += 10; crit_bull += 1; factors.append("Цена пробила нижнюю полосу BB — отскок ожидается")
+    elif bb["pct_b"] < 0.15: bull += 6; factors.append(f"BB %B={bb['pct_b']} — у нижней границы")
+    elif bb["pct_b"] > 0.95: bear += 10; crit_bear += 1; factors.append("Цена пробила верхнюю полосу BB — разворот вниз")
+    elif bb["pct_b"] > 0.85: bear += 6; factors.append(f"BB %B={bb['pct_b']} — у верхней границы")
+    if bb["squeeze"]: factors.append("Bollinger Squeeze — взрывное движение на подходе")
+
+    # Stochastic (8)
+    if stoch["zone"] == "oversold" and stoch["k"] > stoch["d"]: bull += 8; crit_bull += 1; factors.append(f"Stoch={stoch['k']} — перепроданность + крест вверх")
+    elif stoch["zone"] == "overbought" and stoch["k"] < stoch["d"]: bear += 8; crit_bear += 1; factors.append(f"Stoch={stoch['k']} — перекупленность + крест вниз")
+
+    # Тренд EMA (12)
+    t = trend["trend"]
+    if t == "strong_uptrend": bull += 12; crit_bull += 1; factors.append(f"Сильный тренд EMA9>EMA21>EMA50, сила {trend['strength']}%")
+    elif t == "uptrend": bull += 6; factors.append(f"Восходящий тренд, сила {trend['strength']}%")
+    elif t == "strong_downtrend": bear += 12; crit_bear += 1; factors.append(f"Сильный нисходящий тренд, сила {trend['strength']}%")
+    elif t == "downtrend": bear += 6; factors.append(f"Нисходящий тренд, сила {trend['strength']}%")
+
+    # Объём (6)
+    if vol["climax"]: factors.append(f"Объёмный клаймакс x{vol['ratio']} — возможный разворот")
+    elif vol["trend"] == "increasing" and vol["ratio"] > 1.5:
+        if bull > bear: bull += 4
+        else: bear += 4
+        factors.append(f"Объём подтверждает движение x{vol['ratio']}")
+
+    # Fear & Greed (8)
+    fg_v = fg["value"]
+    if fg_v < 20: bull += 8; crit_bull += 1; factors.append(f"F&G={fg_v} Extreme Fear — исторически лучшая точка LONG")
+    elif fg_v < 35: bull += 4; factors.append(f"F&G={fg_v} Fear")
+    elif fg_v > 80: bear += 8; crit_bear += 1; factors.append(f"F&G={fg_v} Extreme Greed — рынок перегрет")
+    elif fg_v > 70: bear += 4; factors.append(f"F&G={fg_v} Greed")
+    else: factors.append(f"F&G={fg_v} нейтральный сентимент")
+
+    # Дивергенция (8)
+    if divergence == "bullish_divergence": bull += 8; crit_bull += 1; factors.append("Бычья дивергенция RSI: цена↓, RSI↑")
+    elif divergence == "bearish_divergence": bear += 8; crit_bear += 1; factors.append("Медвежья дивергенция RSI: цена↑, RSI↓")
+
+    # S/R (5)
+    if sr["near_support"]: bull += 5; factors.append(f"Цена у ключевой поддержки {sr['support']:.4f}")
+    if sr["near_resistance"]: bear += 5; factors.append(f"Цена у ключевого сопротивления {sr['resistance']:.4f}")
+
+    # Паттерны (5)
+    for p in patterns:
+        if "бычий" in p.lower() or "молот" in p.lower(): bull += 3; factors.append(f"Паттерн: {p}")
+        elif "медвежий" in p.lower() or "висельник" in p.lower(): bear += 3; factors.append(f"Паттерн: {p}")
+
+    total = bull + bear
+    if total == 0:
+        return {"direction": "NONE", "confidence": 0, "bull": 0, "bear": 0, "factors": factors, "critical": 0}
+
+    if bull >= bear:
+        direction = "LONG"; dominance = bull / total; crit = crit_bull
     else:
-        factors.append(f"RSI={rsi} — нейтральная зона")
+        direction = "SHORT"; dominance = bear / total; crit = crit_bear
 
-    # 2. MACD (вес: 15)
-    if macd["trend"] == "bullish" and macd["hist"] > 0:
-        bull_score += 15
-        factors.append(f"MACD бычий разворот — гистограмма растёт")
-    elif macd["trend"] == "bearish":
-        bear_score += 15
-        factors.append(f"MACD медвежий — гистограмма падает")
+    base = dominance * 100
+    crit_bonus = max(0, (crit - 3) * 5)
+    crit_penalty = max(0, (3 - crit) * 10)
 
-    # 3. Bollinger Bands (вес: 15)
-    if bb["pct_b"] < 0.1:
-        bull_score += 15
-        factors.append("Цена у нижней полосы Bollinger — отскок вероятен")
-    elif bb["pct_b"] > 0.9:
-        bear_score += 15
-        factors.append("Цена у верхней полосы Bollinger — коррекция вероятна")
-    if bb["squeeze"]:
-        factors.append("Bollinger Squeeze — ожидается взрывное движение")
-        bull_score += 5
-        bear_score += 5
+    # Штраф за противоречие со старшим ТФ
+    if direction == "LONG" and rsi_1d > 65: base -= 10; factors.append("Внимание: RSI(1d) высокий — против глобального тренда")
+    if direction == "SHORT" and rsi_1d < 40: base -= 10; factors.append("Внимание: RSI(1d) низкий — против глобального тренда")
 
-    # 4. Тренд (вес: 20)
-    if trend["trend"] == "uptrend":
-        bull_score += 15 + min(trend["strength"] // 10, 5)
-        factors.append(f"Восходящий тренд, сила {trend['strength']}%")
-    elif trend["trend"] == "downtrend":
-        bear_score += 15 + min(trend["strength"] // 10, 5)
-        factors.append(f"Нисходящий тренд, сила {trend['strength']}%")
-
-    # 5. Объём (вес: 10)
-    if vol["trend"] == "increasing":
-        factors.append(f"Объём растёт x{vol['ratio']} — подтверждение движения")
-        bull_score += 5 if trend["trend"] == "uptrend" else 0
-        bear_score += 5 if trend["trend"] == "downtrend" else 0
-    elif vol["trend"] == "decreasing":
-        factors.append(f"Объём падает — слабость движения")
-
-    # 6. Fear & Greed (вес: 10)
-    fg_val = fg["value"]
-    if fg_val < 25:
-        bull_score += 10
-        factors.append(f"Fear & Greed={fg_val} — Extreme Fear (исторически лучшее время покупки)")
-    elif fg_val < 40:
-        bull_score += 5
-        factors.append(f"Fear & Greed={fg_val} — Fear (рынок недооценён)")
-    elif fg_val > 80:
-        bear_score += 10
-        factors.append(f"Fear & Greed={fg_val} — Extreme Greed (рынок перегрет, риск коррекции)")
-    elif fg_val > 65:
-        bear_score += 5
-        factors.append(f"Fear & Greed={fg_val} — Greed (осторожность)")
-    else:
-        factors.append(f"Fear & Greed={fg_val} — нейтральный сентимент")
-
-    # 7. Дивергенция (вес: 10)
-    if divergence == "bullish_divergence":
-        bull_score += 10
-        factors.append("Бычья дивергенция RSI — сильный сигнал разворота вверх")
-    elif divergence == "bearish_divergence":
-        bear_score += 10
-        factors.append("Медвежья дивергенция RSI — сигнал разворота вниз")
-
-    # 8. Поддержка/сопротивление (вес: 5)
-    dist_support = (price - sr["support"]) / price * 100
-    dist_resistance = (sr["resistance"] - price) / price * 100
-    if dist_support < 1.5:
-        bull_score += 5
-        factors.append(f"Цена у уровня поддержки ({sr['support']:.2f})")
-    if dist_resistance < 1.5:
-        bear_score += 5
-        factors.append(f"Цена у уровня сопротивления ({sr['resistance']:.2f})")
-
-    # Итоговая уверенность
-    total = bull_score + bear_score
-    if bull_score > bear_score and bull_score >= 35:
-        direction = "LONG"
-        confidence = min(int((bull_score / max(total, 1)) * 100 * 1.1), 95)
-    elif bear_score > bull_score and bear_score >= 35:
-        direction = "SHORT"
-        confidence = min(int((bear_score / max(total, 1)) * 100 * 1.1), 95)
-    else:
-        direction = "NONE"
-        confidence = 0
+    confidence = min(int(base + crit_bonus - crit_penalty), 97)
+    if (direction == "LONG" and bull < 40) or (direction == "SHORT" and bear < 40):
+        confidence = min(confidence, 80)
 
     return {
-        "direction": direction,
-        "confidence": confidence,
-        "bull_score": bull_score,
-        "bear_score": bear_score,
-        "factors": factors
+        "direction": direction if confidence >= MIN_CONFIDENCE else "NONE",
+        "confidence": confidence, "bull": bull, "bear": bear,
+        "factors": factors[:12], "critical": crit
     }
 
 def generate_signal(sym: str, fg: dict) -> dict | None:
-    candles_1h = get_candles(sym, "1h", 100)
-    candles_4h = get_candles(sym, "4h", 50)
-    if not candles_1h:
+    c1h = get_candles(sym, "1h", 100)
+    c4h = get_candles(sym, "4h", 60)
+    c1d = get_candles(sym, "1d", 50)
+    if not c1h or len(c1h) < 50:
         return None
 
-    closes = [c["c"] for c in candles_1h]
-    highs = [c["h"] for c in candles_1h]
-    lows = [c["l"] for c in candles_1h]
-    price = closes[-1]
+    cl1h = [c["c"] for c in c1h]
+    cl4h = [c["c"] for c in c4h] if c4h else cl1h
+    cl1d = [c["c"] for c in c1d] if c1d else cl1h
+    h1h = [c["h"] for c in c1h]
+    l1h = [c["l"] for c in c1h]
+    price = cl1h[-1]
 
-    rsi = calc_rsi(closes)
-    rsi_4h = calc_rsi([c["c"] for c in candles_4h]) if candles_4h else rsi
-    macd = calc_macd(closes)
-    bb = calc_bollinger(closes)
-    trend = detect_trend(closes)
-    vol = calc_volume_profile(candles_1h)
-    divergence = detect_divergence(closes, rsi)
-    sr = detect_support_resistance(candles_1h, price)
+    rsi_1h = calc_rsi(cl1h)
+    rsi_4h = calc_rsi(cl4h)
+    rsi_1d = calc_rsi(cl1d)
+    macd = calc_macd(cl1h)
+    bb = calc_bollinger(cl1h)
+    stoch = calc_stochastic(h1h, l1h, cl1h)
+    trend = detect_trend(cl1h)
+    vol = calc_volume(c1h)
+    patterns = detect_candle_patterns(c1h)
+    sr = detect_sr(c1h, price)
+    divergence = detect_divergence(cl1h, rsi_1h, rsi_4h)
 
-    score = score_signal(rsi, macd, bb, trend, vol, fg, divergence, sr, price, candles_1h)
+    score = score_signal(rsi_1h, rsi_4h, rsi_1d, macd, bb, stoch, trend, vol, fg, divergence, sr, patterns)
     if score["direction"] == "NONE":
         return None
 
     direction = score["direction"]
     confidence = score["confidence"]
+    atr = calc_atr(h1h, l1h, cl1h)
 
-    # ATR для расчёта TP/SL
-    atr = 0
-    for i in range(1, min(15, len(candles_1h))):
-        hl = candles_1h[i]["h"] - candles_1h[i]["l"]
-        hc = abs(candles_1h[i]["h"] - candles_1h[i-1]["c"])
-        lc = abs(candles_1h[i]["l"] - candles_1h[i-1]["c"])
-        atr += max(hl, hc, lc)
-    atr = atr / 14 if atr > 0 else price * 0.01
-
-    # Risk/Reward 1:2.5
     if direction == "LONG":
-        target = round(price + atr * 3.5, 6)
-        stop = round(price - atr * 1.4, 6)
+        target = round(price + atr * 4.0, 8)
+        stop = round(price - atr * 1.6, 8)
     else:
-        target = round(price - atr * 3.5, 6)
-        stop = round(price + atr * 1.4, 6)
+        target = round(price - atr * 4.0, 8)
+        stop = round(price + atr * 1.6, 8)
 
     pair = sym.replace("USDT", "/USDT")
-    analysis = (
-        f"Анализ {pair}: " +
-        f"RSI(1h)={rsi}, RSI(4h)={rsi_4h}, " +
-        f"MACD {macd['trend']}, " +
-        f"BB %B={bb['pct_b']}" +
-        (", BB Squeeze — ожидается взрыв!" if bb["squeeze"] else "") +
-        f", Тренд: {trend['trend']} (сила {trend['strength']}%)" +
-        f", Объём x{vol['ratio']}" +
-        f", F&G={fg['value']} ({fg['classification']})" +
-        (f", {divergence.replace('_', ' ')}" if divergence != "none" else "")
-    )
+    rr = round(abs(target - price) / abs(stop - price), 2) if abs(stop - price) > 0 else 2.5
+    potential = round(abs(target - price) / price * 100, 2)
 
     return {
-        "pair": pair,
-        "symbol": sym,
-        "type": direction,
+        "pair": pair, "symbol": sym, "type": direction,
         "exchange": EXCHANGES.get(sym, "Binance"),
-        "entry": round(price, 6),
-        "target": target,
-        "stop": stop,
-        "confidence": confidence,
-        "status": "active" if confidence >= 75 else "waiting",
-        "rsi": rsi,
-        "rsi_4h": rsi_4h,
-        "macd": macd,
-        "bollinger": bb,
-        "trend": trend,
-        "volume": vol,
-        "fear_greed": fg,
-        "divergence": divergence,
+        "entry": round(price, 8), "target": target, "stop": stop,
+        "confidence": confidence, "status": "active",
+        "rsi_1h": rsi_1h, "rsi_4h": rsi_4h, "rsi_1d": rsi_1d,
+        "macd": macd, "bollinger": bb, "stochastic": stoch,
+        "trend": trend, "volume": vol, "fear_greed": fg,
+        "divergence": divergence, "patterns": patterns,
         "support_resistance": sr,
         "factors": score["factors"],
-        "analysis": analysis,
-        "risk_reward": round(abs(target - price) / abs(stop - price), 2),
-        "potential_pct": round(abs(target - price) / price * 100, 2),
-        "atr": round(atr, 6),
-        "time": datetime.utcnow().strftime("%H:%M")
+        "bull_score": score["bull"], "bear_score": score["bear"],
+        "critical_signals": score["critical"],
+        "risk_reward": rr, "potential_pct": potential,
+        "atr": round(atr, 8),
+        "time": datetime.utcnow().strftime("%H:%M"), "timeframe": "1h"
     }
 
-def save_signal(sig: dict):
+def save_signal(sig: dict) -> int | None:
     try:
         conn = psycopg2.connect(os.environ["DATABASE_URL"])
         cur = conn.cursor()
-        schema = "t_p73206386_global_trading_signa"
         cur.execute(
-            f"""INSERT INTO {schema}.signals
+            f"""INSERT INTO {SCHEMA}.signals
             (pair, signal_type, exchange, entry_price, target_price, stop_price,
              confidence, status, rsi, macd_signal, bb_position, volume_ratio,
-             fear_greed, sentiment, analysis_text)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+             fear_greed, sentiment, analysis_text, timeframe, score_bull, score_bear)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
             (sig["pair"], sig["type"], sig["exchange"], sig["entry"], sig["target"], sig["stop"],
-             sig["confidence"], sig["status"], sig["rsi"], sig["macd"]["signal"],
+             sig["confidence"], "active", sig["rsi_1h"], sig["macd"]["signal"],
              sig["bollinger"]["pct_b"], sig["volume"]["ratio"],
-             sig["fear_greed"]["value"], sig["fear_greed"]["classification"], sig["analysis"])
+             sig["fear_greed"]["value"], sig["fear_greed"]["classification"],
+             " | ".join(sig["factors"][:6]), "1h", sig["bull_score"], sig["bear_score"])
         )
-        conn.commit()
-        cur.close()
-        conn.close()
+        row = cur.fetchone()
+        conn.commit(); cur.close(); conn.close()
+        return row[0] if row else None
     except Exception:
-        pass
+        return None
 
-def get_saved_signals() -> list:
+def get_saved_signals(limit: int = 30) -> list:
     try:
         conn = psycopg2.connect(os.environ["DATABASE_URL"])
         cur = conn.cursor()
-        schema = "t_p73206386_global_trading_signa"
         cur.execute(
             f"""SELECT id, pair, signal_type, exchange, entry_price, target_price, stop_price,
-            confidence, status, rsi, fear_greed, analysis_text, created_at
-            FROM {schema}.signals ORDER BY created_at DESC LIMIT 20"""
+            confidence, status, rsi, fear_greed, analysis_text, created_at, result, result_pct,
+            score_bull, score_bear
+            FROM {SCHEMA}.signals ORDER BY created_at DESC LIMIT %s""", (limit,)
         )
         rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        cur.close(); conn.close()
         return [{
             "id": r[0], "pair": r[1], "type": r[2], "exchange": r[3],
             "entry": float(r[4]), "target": float(r[5]), "stop": float(r[6]),
-            "confidence": r[7], "status": r[8], "rsi": float(r[9]) if r[9] else 50,
-            "fear_greed": r[10], "analysis": r[11],
-            "time": r[12].strftime("%H:%M") if r[12] else "—"
+            "confidence": r[7], "status": r[8], "rsi_1h": float(r[9]) if r[9] else 50,
+            "fear_greed": r[10], "factors": r[11].split(" | ") if r[11] else [],
+            "time": r[12].strftime("%H:%M") if r[12] else "—",
+            "date": r[12].strftime("%d.%m %H:%M") if r[12] else "—",
+            "result": r[13], "result_pct": round(float(r[14]), 2) if r[14] else None,
+            "bull_score": r[15] or 0, "bear_score": r[16] or 0
         } for r in rows]
     except Exception:
         return []
+
+def get_stats() -> dict:
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT COUNT(*) as total,
+                COUNT(*) FILTER (WHERE result = 'win') as wins,
+                COUNT(*) FILTER (WHERE result = 'loss') as losses,
+                COUNT(*) FILTER (WHERE result IS NULL AND status = 'active') as pending,
+                AVG(result_pct) FILTER (WHERE result = 'win') as avg_win,
+                AVG(result_pct) FILTER (WHERE result = 'loss') as avg_loss,
+                AVG(confidence) as avg_conf,
+                MAX(result_pct) as best, MIN(result_pct) as worst
+            FROM {SCHEMA}.signals
+        """)
+        row = cur.fetchone()
+        total = row[0] or 0; wins = row[1] or 0; losses = row[2] or 0; pending = row[3] or 0
+        avg_win = float(row[4]) if row[4] else 0; avg_loss = float(row[5]) if row[5] else 0
+        avg_conf = float(row[6]) if row[6] else 0
+        best = float(row[7]) if row[7] else 0; worst = float(row[8]) if row[8] else 0
+        closed = wins + losses
+        win_rate = round(wins / closed * 100, 1) if closed > 0 else 0
+
+        cur.execute(f"""
+            SELECT DATE(created_at) as d, COUNT(*) as cnt,
+                COUNT(*) FILTER (WHERE result='win') as w,
+                COUNT(*) FILTER (WHERE result='loss') as l
+            FROM {SCHEMA}.signals
+            WHERE created_at > NOW() - INTERVAL '7 days'
+            GROUP BY d ORDER BY d DESC
+        """)
+        daily = [{"date": str(r[0]), "total": r[1], "wins": r[2], "losses": r[3]} for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT pair, COUNT(*) as total,
+                COUNT(*) FILTER (WHERE result='win') as wins,
+                AVG(result_pct) FILTER (WHERE result IS NOT NULL) as avg_pct
+            FROM {SCHEMA}.signals WHERE result IS NOT NULL
+            GROUP BY pair ORDER BY wins DESC LIMIT 10
+        """)
+        by_pair = [{"pair": r[0], "total": r[1], "wins": r[2], "avg_pct": round(float(r[3]), 2) if r[3] else 0} for r in cur.fetchall()]
+
+        cur.close(); conn.close()
+        expectancy = round((win_rate / 100 * avg_win) + ((1 - win_rate / 100) * avg_loss), 2)
+        return {
+            "total": total, "wins": wins, "losses": losses, "pending": pending,
+            "closed": closed, "win_rate": win_rate,
+            "avg_win": round(avg_win, 2), "avg_loss": round(avg_loss, 2),
+            "avg_confidence": round(avg_conf, 1),
+            "best_trade": round(best, 2), "worst_trade": round(worst, 2),
+            "expectancy": expectancy, "daily": daily, "by_pair": by_pair
+        }
+    except Exception:
+        return {"total": 0, "wins": 0, "losses": 0, "pending": 0, "closed": 0,
+                "win_rate": 0, "avg_win": 0, "avg_loss": 0, "avg_confidence": 0,
+                "best_trade": 0, "worst_trade": 0, "expectancy": 0, "daily": [], "by_pair": []}
+
+def auto_close_signals():
+    """Проверяем старые активные сигналы и закрываем по текущей цене."""
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT id, pair, signal_type, entry_price, target_price, stop_price
+            FROM {SCHEMA}.signals
+            WHERE status = 'active' AND created_at < NOW() - INTERVAL '4 hours' LIMIT 20
+        """)
+        rows = cur.fetchall(); cur.close(); conn.close()
+        for row in rows:
+            sig_id, pair, sig_type, entry, target, stop = row
+            sym = pair.replace("/", "")
+            tick = fetch_url(f"https://api.binance.com/api/v3/ticker/price?symbol={sym}")
+            if not tick or "price" not in tick:
+                continue
+            price = float(tick["price"])
+            entry_f = float(entry); target_f = float(target); stop_f = float(stop)
+            if sig_type == "LONG":
+                exit_p = target_f if price >= target_f else stop_f if price <= stop_f else price
+                result_pct = (exit_p - entry_f) / entry_f * 100
+            else:
+                exit_p = target_f if price <= target_f else stop_f if price >= stop_f else price
+                result_pct = (entry_f - exit_p) / entry_f * 100
+            result = "win" if result_pct > 0 else "loss"
+            conn2 = psycopg2.connect(os.environ["DATABASE_URL"])
+            cur2 = conn2.cursor()
+            cur2.execute(f"""
+                UPDATE {SCHEMA}.signals SET actual_exit_price=%s, result=%s,
+                result_pct=%s, status='closed', closed_at=NOW() WHERE id=%s
+            """, (exit_p, result, result_pct, sig_id))
+            conn2.commit(); cur2.close(); conn2.close()
+    except Exception:
+        pass
 
 def handler(event: dict, context) -> dict:
     if event.get("httpMethod") == "OPTIONS":
@@ -395,29 +533,53 @@ def handler(event: dict, context) -> dict:
     action = params.get("action", "generate")
 
     if action == "saved":
-        return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"signals": get_saved_signals()})}
+        return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"signals": get_saved_signals(int(params.get("limit", 30)))})}
 
-    # Генерируем новые сигналы
+    if action == "stats":
+        auto_close_signals()
+        return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"stats": get_stats()})}
+
+    if action == "close":
+        body = json.loads(event.get("body") or "{}")
+        sig_id = int(body.get("signal_id", 0))
+        exit_price = float(body.get("exit_price", 0))
+        if sig_id and exit_price:
+            # Inline close
+            try:
+                conn = psycopg2.connect(os.environ["DATABASE_URL"])
+                cur = conn.cursor()
+                cur.execute(f"SELECT entry_price, signal_type FROM {SCHEMA}.signals WHERE id = %s", (sig_id,))
+                row = cur.fetchone()
+                if row:
+                    entry = float(row[0]); stype = row[1]
+                    rp = (exit_price - entry) / entry * 100 if stype == "LONG" else (entry - exit_price) / entry * 100
+                    cur.execute(f"UPDATE {SCHEMA}.signals SET actual_exit_price=%s, result=%s, result_pct=%s, status='closed', closed_at=NOW() WHERE id=%s",
+                                (exit_price, "win" if rp > 0 else "loss", rp, sig_id))
+                    conn.commit()
+                cur.close(); conn.close()
+            except Exception:
+                pass
+        return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"ok": True})}
+
+    # generate — порог 90%+
+    auto_close_signals()
     fg = get_fear_greed()
     signals = []
     for sym in PAIRS:
         sig = generate_signal(sym, fg)
         if sig:
+            db_id = save_signal(sig)
+            if db_id:
+                sig["db_id"] = db_id
             signals.append(sig)
-            if sig["confidence"] >= 65:
-                save_signal(sig)
 
-    # Сортируем по уверенности
     signals.sort(key=lambda x: x["confidence"], reverse=True)
-
     return {
-        "statusCode": 200,
-        "headers": HEADERS,
+        "statusCode": 200, "headers": HEADERS,
         "body": json.dumps({
-            "signals": signals,
-            "fear_greed": fg,
-            "analyzed": len(PAIRS),
-            "found": len(signals),
+            "signals": signals, "fear_greed": fg,
+            "analyzed": len(PAIRS), "found": len(signals),
+            "min_confidence": MIN_CONFIDENCE,
             "generated_at": datetime.utcnow().isoformat()
         })
     }

@@ -1,0 +1,20 @@
+{
+  "tests": [
+    {
+      "name": "Bot stats",
+      "method": "GET",
+      "path": "/?action=stats",
+      "expectedStatus": 200,
+      "expectedBody": {"total": 0},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Get config",
+      "method": "GET",
+      "path": "/?action=config",
+      "expectedStatus": 200,
+      "expectedBody": {"exchanges": []},
+      "bodyMatcher": "partial"
+    }
+  ]
+}
