@@ -112,10 +112,30 @@ def mexc_req(endpoint, params, api_key, secret, method="GET"):
     return fetch_url(f"{base}{endpoint}?{q}", "POST", hdrs)
 
 def mexc_balance(api_key, secret):
+    total = 0.0
+    details = {}
+    # Spot
     d = mexc_req("/api/v3/account", {}, api_key, secret)
-    if "error" in d or "balances" not in d: return {"error": d.get("error","err")}
-    usdt = next((float(b["free"]) for b in d["balances"] if b["asset"]=="USDT"), 0)
-    return {"usdt": round(usdt,2), "exchange": "MEXC", "ok": True}
+    if "balances" in d:
+        for b in d["balances"]:
+            free = float(b.get("free", 0))
+            locked = float(b.get("locked", 0))
+            if free + locked > 0:
+                details[b["asset"]] = round(free + locked, 4)
+            if b["asset"] == "USDT":
+                total += free + locked
+    # Futures
+    try:
+        f = mexc_req("/api/v3/capital/config/getall", {}, api_key, secret)
+        if isinstance(f, list):
+            for coin in f:
+                if coin.get("coin") == "USDT":
+                    total += float(coin.get("free", 0))
+    except Exception:
+        pass
+    if total == 0 and not details:
+        return {"usdt": 0, "exchange": "MEXC", "ok": True, "hint": "Баланс 0 — убедитесь что средства на Spot-кошельке (не Futures/Earn). Переведите через Трансфер на MEXC.", "assets": details}
+    return {"usdt": round(total, 2), "exchange": "MEXC", "ok": True, "assets": details}
 
 def mexc_order(symbol, side, qty, api_key, secret):
     return mexc_req("/api/v3/order", {"symbol":symbol,"side":side,"type":"MARKET","quantity":str(round(qty,6))}, api_key, secret, "POST")
