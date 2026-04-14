@@ -680,6 +680,10 @@ def handler(event: dict, context) -> dict:
     params = event.get("queryStringParameters") or {}
     action = params.get("action", "generate")
 
+    if action == "test_telegram":
+        send_telegram("🚀 <b>Global Trading Signal Bot</b>\n\nТестовое уведомление — Telegram подключён!\nСигналы и результаты сделок будут приходить сюда.")
+        return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"ok": True, "message": "Telegram test sent"})}
+
     if action == "saved":
         return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"signals": get_saved_signals(int(params.get("limit", 30)))})}
 
