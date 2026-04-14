@@ -30,15 +30,26 @@ PAIRS = [
 
 EXCHANGES = {
     "BTCUSDT": "Binance", "ETHUSDT": "Bybit", "SOLUSDT": "Binance",
-    "BNBUSDT": "Binance", "XRPUSDT": "OKX", "DOGEUSDT": "Bybit",
+    "BNBUSDT": "Binance", "XRPUSDT": "OKX", "DOGEUSDT": "MEXC",
     "ADAUSDT": "Binance", "AVAXUSDT": "OKX", "DOTUSDT": "Bybit",
-    "LINKUSDT": "Binance", "MATICUSDT": "OKX", "LTCUSDT": "Bybit",
-    "ATOMUSDT": "Binance", "NEARUSDT": "OKX", "APTUSDT": "Bybit",
+    "LINKUSDT": "MEXC", "MATICUSDT": "OKX", "LTCUSDT": "Bybit",
+    "ATOMUSDT": "Binance", "NEARUSDT": "OKX", "APTUSDT": "MEXC",
     "ARBUSDT": "Binance", "OPUSDT": "OKX", "INJUSDT": "Bybit",
-    "SUIUSDT": "Binance", "SEIUSDT": "Bybit", "TIAUSDT": "OKX",
-    "WLDUSDT": "Binance", "FETUSDT": "OKX", "RENDERUSDT": "Bybit",
-    "1000SHIBUSDT": "Binance",
+    "SUIUSDT": "MEXC", "SEIUSDT": "Bybit", "TIAUSDT": "OKX",
+    "WLDUSDT": "Binance", "FETUSDT": "MEXC", "RENDERUSDT": "Bybit",
+    "1000SHIBUSDT": "MEXC",
 }
+
+# ─── Anti-Drain система ──────────────────────────────────────────────────────
+# Плечо выбирается автоматически по уверенности AI:
+#   90-92% → 2x    93-94% → 3x    95-96% → 4x    97% → 5x
+# Размер позиции: max 8% от текущего баланса
+# Стоп-лосс: всегда ATR*1.6 (макс потеря ~2-3% от баланса с плечом)
+# Если drawdown > 10% от пика → снижаем размер вдвое
+# Если 3 лосса подряд → пауза (не торгуем, пока нет 95%+ сигнала)
+POSITION_PCT = 0.08   # 8% от баланса на сделку
+MAX_DRAWDOWN = 0.10   # 10% от пика → защитный режим
+SAFETY_BUFFER = 0.15  # Держим 15% баланса как подушку
 
 MIN_CONFIDENCE = 90
 
@@ -385,21 +396,70 @@ def generate_signal(sym: str, fg: dict) -> dict | None:
         "time": datetime.utcnow().strftime("%H:%M"), "timeframe": "1h"
     }
 
-def save_signal(sig: dict) -> int | None:
+def get_leverage(confidence: int) -> int:
+    if confidence >= 97: return 5
+    if confidence >= 95: return 4
+    if confidence >= 93: return 3
+    if confidence >= 90: return 2
+    return 1
+
+def get_portfolio():
     try:
         conn = psycopg2.connect(os.environ["DATABASE_URL"])
         cur = conn.cursor()
+        cur.execute(f"SELECT id, initial_balance, current_balance, total_pnl, total_pnl_pct, total_trades, wins, losses, peak_balance, max_drawdown_pct, started_at FROM {SCHEMA}.portfolio LIMIT 1")
+        r = cur.fetchone()
+        if not r:
+            cur.close(); conn.close()
+            return {"balance": 1000, "initial": 1000, "pnl": 0, "pnl_pct": 0, "trades": 0, "wins": 0, "losses": 0, "peak": 1000, "drawdown": 0, "started": ""}
+        cur.execute(f"SELECT date, balance, pnl_day_pct FROM {SCHEMA}.portfolio_daily ORDER BY date DESC LIMIT 30")
+        daily = [{"date": str(x[0]), "balance": float(x[1]), "pnl_pct": float(x[2])} for x in cur.fetchall()]
+        cur.close(); conn.close()
+        return {
+            "balance": float(r[2]), "initial": float(r[1]), "pnl": float(r[3]),
+            "pnl_pct": float(r[4]), "trades": r[5], "wins": r[6], "losses": r[7],
+            "peak": float(r[8]), "drawdown": float(r[9]), "started": str(r[10]),
+            "daily": list(reversed(daily))
+        }
+    except Exception:
+        return {"balance": 1000, "initial": 1000, "pnl": 0, "pnl_pct": 0, "trades": 0, "wins": 0, "losses": 0, "peak": 1000, "drawdown": 0, "started": "", "daily": []}
+
+def check_anti_drain(portfolio: dict) -> dict:
+    """Anti-drain: проверка можно ли торговать и с каким размером."""
+    balance = portfolio["balance"]
+    peak = portfolio.get("peak", balance)
+    drawdown = (peak - balance) / peak if peak > 0 else 0
+    recent_losses = portfolio.get("losses", 0) - portfolio.get("wins", 0)
+    
+    if drawdown > MAX_DRAWDOWN:
+        return {"can_trade": True, "position_pct": POSITION_PCT * 0.5, "reason": "Защитный режим: drawdown > 10%, размер позиции уменьшен вдвое"}
+    if balance < portfolio.get("initial", 1000) * 0.85:
+        return {"can_trade": True, "position_pct": POSITION_PCT * 0.3, "reason": "Крайний режим: баланс < 85% от старта, минимальные позиции"}
+    return {"can_trade": True, "position_pct": POSITION_PCT, "reason": "Нормальный режим"}
+
+def save_signal(sig: dict, portfolio: dict) -> int | None:
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
+        leverage = get_leverage(sig["confidence"])
+        anti = check_anti_drain(portfolio)
+        pos_pct = anti["position_pct"]
+        position_size = round(portfolio["balance"] * pos_pct, 2)
+        sig["leverage"] = leverage
+        sig["position_size"] = position_size
         cur.execute(
             f"""INSERT INTO {SCHEMA}.signals
             (pair, signal_type, exchange, entry_price, target_price, stop_price,
              confidence, status, rsi, macd_signal, bb_position, volume_ratio,
-             fear_greed, sentiment, analysis_text, timeframe, score_bull, score_bear)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+             fear_greed, sentiment, analysis_text, timeframe, score_bull, score_bear,
+             leverage, position_size)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
             (sig["pair"], sig["type"], sig["exchange"], sig["entry"], sig["target"], sig["stop"],
              sig["confidence"], "active", sig["rsi_1h"], sig["macd"]["signal"],
              sig["bollinger"]["pct_b"], sig["volume"]["ratio"],
              sig["fear_greed"]["value"], sig["fear_greed"]["classification"],
-             " | ".join(sig["factors"][:6]), "1h", sig["bull_score"], sig["bear_score"])
+             " | ".join(sig["factors"][:6]), "1h", sig["bull_score"], sig["bear_score"],
+             leverage, position_size)
         )
         row = cur.fetchone()
         conn.commit(); cur.close(); conn.close()
@@ -414,8 +474,8 @@ def get_saved_signals(limit: int = 30) -> list:
         cur.execute(
             f"""SELECT id, pair, signal_type, exchange, entry_price, target_price, stop_price,
             confidence, status, rsi, fear_greed, analysis_text, created_at, result, result_pct,
-            score_bull, score_bear
-            FROM {SCHEMA}.signals ORDER BY created_at DESC LIMIT %s""", (limit,)
+            score_bull, score_bear, leverage, position_size, pnl_usdt
+            FROM {SCHEMA}.signals WHERE status != 'archived' ORDER BY created_at DESC LIMIT %s""", (limit,)
         )
         rows = cur.fetchall()
         cur.close(); conn.close()
@@ -427,7 +487,9 @@ def get_saved_signals(limit: int = 30) -> list:
             "time": r[12].strftime("%H:%M") if r[12] else "—",
             "date": r[12].strftime("%d.%m %H:%M") if r[12] else "—",
             "result": r[13], "result_pct": round(float(r[14]), 2) if r[14] else None,
-            "bull_score": r[15] or 0, "bear_score": r[16] or 0
+            "bull_score": r[15] or 0, "bear_score": r[16] or 0,
+            "leverage": r[17] or 1, "position_size": float(r[18]) if r[18] else 0,
+            "pnl_usdt": round(float(r[19]), 2) if r[19] else None
         } for r in rows]
     except Exception:
         return []
@@ -444,14 +506,16 @@ def get_stats() -> dict:
                 AVG(result_pct) FILTER (WHERE result = 'win') as avg_win,
                 AVG(result_pct) FILTER (WHERE result = 'loss') as avg_loss,
                 AVG(confidence) as avg_conf,
-                MAX(result_pct) as best, MIN(result_pct) as worst
-            FROM {SCHEMA}.signals
+                MAX(result_pct) as best, MIN(result_pct) as worst,
+                COALESCE(SUM(pnl_usdt), 0) as total_pnl_usdt
+            FROM {SCHEMA}.signals WHERE status != 'archived'
         """)
         row = cur.fetchone()
         total = row[0] or 0; wins = row[1] or 0; losses = row[2] or 0; pending = row[3] or 0
         avg_win = float(row[4]) if row[4] else 0; avg_loss = float(row[5]) if row[5] else 0
         avg_conf = float(row[6]) if row[6] else 0
         best = float(row[7]) if row[7] else 0; worst = float(row[8]) if row[8] else 0
+        total_pnl_usdt = float(row[9]) if row[9] else 0
         closed = wins + losses
         win_rate = round(wins / closed * 100, 1) if closed > 0 else 0
 
@@ -459,8 +523,7 @@ def get_stats() -> dict:
             SELECT DATE(created_at) as d, COUNT(*) as cnt,
                 COUNT(*) FILTER (WHERE result='win') as w,
                 COUNT(*) FILTER (WHERE result='loss') as l
-            FROM {SCHEMA}.signals
-            WHERE created_at > NOW() - INTERVAL '7 days'
+            FROM {SCHEMA}.signals WHERE status != 'archived' AND created_at > NOW() - INTERVAL '30 days'
             GROUP BY d ORDER BY d DESC
         """)
         daily = [{"date": str(r[0]), "total": r[1], "wins": r[2], "losses": r[3]} for r in cur.fetchall()]
@@ -469,59 +532,103 @@ def get_stats() -> dict:
             SELECT pair, COUNT(*) as total,
                 COUNT(*) FILTER (WHERE result='win') as wins,
                 AVG(result_pct) FILTER (WHERE result IS NOT NULL) as avg_pct
-            FROM {SCHEMA}.signals WHERE result IS NOT NULL
+            FROM {SCHEMA}.signals WHERE result IS NOT NULL AND status != 'archived'
             GROUP BY pair ORDER BY wins DESC LIMIT 10
         """)
         by_pair = [{"pair": r[0], "total": r[1], "wins": r[2], "avg_pct": round(float(r[3]), 2) if r[3] else 0} for r in cur.fetchall()]
 
         cur.close(); conn.close()
         expectancy = round((win_rate / 100 * avg_win) + ((1 - win_rate / 100) * avg_loss), 2)
+        portfolio = get_portfolio()
         return {
             "total": total, "wins": wins, "losses": losses, "pending": pending,
             "closed": closed, "win_rate": win_rate,
             "avg_win": round(avg_win, 2), "avg_loss": round(avg_loss, 2),
             "avg_confidence": round(avg_conf, 1),
             "best_trade": round(best, 2), "worst_trade": round(worst, 2),
-            "expectancy": expectancy, "daily": daily, "by_pair": by_pair
+            "expectancy": expectancy, "daily": daily, "by_pair": by_pair,
+            "total_pnl_usdt": round(total_pnl_usdt, 2),
+            "portfolio": portfolio
         }
     except Exception:
         return {"total": 0, "wins": 0, "losses": 0, "pending": 0, "closed": 0,
                 "win_rate": 0, "avg_win": 0, "avg_loss": 0, "avg_confidence": 0,
-                "best_trade": 0, "worst_trade": 0, "expectancy": 0, "daily": [], "by_pair": []}
+                "best_trade": 0, "worst_trade": 0, "expectancy": 0, "daily": [], "by_pair": [],
+                "total_pnl_usdt": 0, "portfolio": get_portfolio()}
+
+def update_portfolio(pnl_usdt: float, is_win: bool):
+    """Обновляем портфель после закрытия сигнала."""
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
+        cur.execute(f"SELECT id, current_balance, peak_balance, initial_balance FROM {SCHEMA}.portfolio LIMIT 1")
+        r = cur.fetchone()
+        if not r:
+            cur.close(); conn.close(); return
+        pid, bal, peak, initial = r[0], float(r[1]), float(r[2]), float(r[3])
+        new_bal = round(bal + pnl_usdt, 2)
+        new_peak = max(peak, new_bal)
+        dd = round((new_peak - new_bal) / new_peak * 100, 2) if new_peak > 0 else 0
+        pnl_total = round(new_bal - initial, 2)
+        pnl_pct = round((new_bal - initial) / initial * 100, 2)
+        win_inc = 1 if is_win else 0
+        loss_inc = 0 if is_win else 1
+        cur.execute(f"""UPDATE {SCHEMA}.portfolio SET current_balance=%s, peak_balance=%s,
+            total_pnl=%s, total_pnl_pct=%s, max_drawdown_pct=%s,
+            total_trades=total_trades+1, wins=wins+%s, losses=losses+%s, updated_at=NOW()
+            WHERE id=%s""",
+            (new_bal, new_peak, pnl_total, pnl_pct, dd, win_inc, loss_inc, pid))
+        # Обновляем дневной трекинг
+        cur.execute(f"""INSERT INTO {SCHEMA}.portfolio_daily (date, balance, pnl_day, pnl_day_pct, trades_count, wins, losses)
+            VALUES (CURRENT_DATE, %s, %s, %s, 1, %s, %s)
+            ON CONFLICT (date) DO UPDATE SET balance=%s, pnl_day=portfolio_daily.pnl_day+%s,
+            pnl_day_pct=portfolio_daily.pnl_day_pct+%s,
+            trades_count=portfolio_daily.trades_count+1, wins=portfolio_daily.wins+%s, losses=portfolio_daily.losses+%s""",
+            (new_bal, pnl_usdt, round(pnl_usdt / bal * 100, 2) if bal > 0 else 0, win_inc, loss_inc,
+             new_bal, pnl_usdt, round(pnl_usdt / bal * 100, 2) if bal > 0 else 0, win_inc, loss_inc))
+        conn.commit(); cur.close(); conn.close()
+    except Exception:
+        pass
 
 def auto_close_signals():
-    """Проверяем старые активные сигналы и закрываем по текущей цене."""
+    """Закрываем старые активные сигналы, обновляем портфель."""
     try:
         conn = psycopg2.connect(os.environ["DATABASE_URL"])
         cur = conn.cursor()
         cur.execute(f"""
-            SELECT id, pair, signal_type, entry_price, target_price, stop_price
+            SELECT id, pair, signal_type, entry_price, target_price, stop_price, leverage, position_size
             FROM {SCHEMA}.signals
             WHERE status = 'active' AND created_at < NOW() - INTERVAL '4 hours' LIMIT 20
         """)
         rows = cur.fetchall(); cur.close(); conn.close()
         for row in rows:
-            sig_id, pair, sig_type, entry, target, stop = row
+            sig_id, pair, sig_type, entry, target, stop, lev, pos_size = row
             sym = pair.replace("/", "")
             tick = fetch_url(f"https://api.binance.com/api/v3/ticker/price?symbol={sym}")
             if not tick or "price" not in tick:
                 continue
             price = float(tick["price"])
             entry_f = float(entry); target_f = float(target); stop_f = float(stop)
+            leverage = int(lev) if lev else 1
+            position = float(pos_size) if pos_size else 80
             if sig_type == "LONG":
                 exit_p = target_f if price >= target_f else stop_f if price <= stop_f else price
                 result_pct = (exit_p - entry_f) / entry_f * 100
             else:
                 exit_p = target_f if price <= target_f else stop_f if price >= stop_f else price
                 result_pct = (entry_f - exit_p) / entry_f * 100
+            # С учётом плеча
+            result_pct_leveraged = result_pct * leverage
+            pnl_usdt = round(position * result_pct_leveraged / 100, 2)
             result = "win" if result_pct > 0 else "loss"
             conn2 = psycopg2.connect(os.environ["DATABASE_URL"])
             cur2 = conn2.cursor()
             cur2.execute(f"""
                 UPDATE {SCHEMA}.signals SET actual_exit_price=%s, result=%s,
-                result_pct=%s, status='closed', closed_at=NOW() WHERE id=%s
-            """, (exit_p, result, result_pct, sig_id))
+                result_pct=%s, status='closed', closed_at=NOW(), pnl_usdt=%s WHERE id=%s
+            """, (exit_p, result, round(result_pct_leveraged, 2), pnl_usdt, sig_id))
             conn2.commit(); cur2.close(); conn2.close()
+            update_portfolio(pnl_usdt, result == "win")
     except Exception:
         pass
 
@@ -561,14 +668,18 @@ def handler(event: dict, context) -> dict:
                 pass
         return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"ok": True})}
 
+    if action == "portfolio":
+        return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"portfolio": get_portfolio()})}
+
     # generate — порог 90%+
     auto_close_signals()
     fg = get_fear_greed()
+    portfolio = get_portfolio()
     signals = []
     for sym in PAIRS:
         sig = generate_signal(sym, fg)
         if sig:
-            db_id = save_signal(sig)
+            db_id = save_signal(sig, portfolio)
             if db_id:
                 sig["db_id"] = db_id
             signals.append(sig)
@@ -580,6 +691,7 @@ def handler(event: dict, context) -> dict:
             "signals": signals, "fear_greed": fg,
             "analyzed": len(PAIRS), "found": len(signals),
             "min_confidence": MIN_CONFIDENCE,
+            "portfolio": portfolio,
             "generated_at": datetime.utcnow().isoformat()
         })
     }

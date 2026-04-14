@@ -231,12 +231,12 @@ function Dashboard({ market, signals }: { market: MarketState; signals: SignalsS
         </div>
         <div className="panel rounded p-3 md:p-4">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-muted-foreground text-xs uppercase tracking-wider">Пары</span>
-            <Icon name="BarChart2" size={12} className="text-muted-foreground" />
+            <span className="text-muted-foreground text-xs uppercase tracking-wider">Портфель</span>
+            <Icon name="Wallet" size={12} className="text-muted-foreground" />
           </div>
-          <div className="font-mono text-base md:text-xl font-semibold">{market.loading ? "..." : market.pairs.length}</div>
+          <div className="font-mono text-base md:text-xl font-semibold bull">$1,000</div>
           <div className="text-xs text-muted-foreground mt-1 font-mono">
-            {market.loading ? "сканирование..." : `${market.updatedAt.slice(11, 16)} UTC`}
+            25 пар · порог 90%+
           </div>
         </div>
       </div>
@@ -395,6 +395,7 @@ function Signals({ signals }: { signals: SignalsState }) {
                       <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${s.status === "active" ? "badge-bull" : "badge-gold"}`}>
                         {s.status === "active" ? "●" : "○"} {s.status === "active" ? "Активен" : "Ожидание"}
                       </span>
+                      {s.leverage > 1 && <span className="badge-bear text-xs px-1.5 py-0.5 rounded font-mono font-bold">{s.leverage}x</span>}
                     </div>
                     <Icon name={expanded === i ? "ChevronUp" : "ChevronDown"} size={14} className="text-muted-foreground" />
                   </div>
@@ -454,6 +455,7 @@ function Signals({ signals }: { signals: SignalsState }) {
                       <div className="font-mono text-xs mt-0.5">{s.confidence}%</div>
                     </div>
                     <div className="flex items-center gap-2">
+                      {s.leverage > 1 && <span className="badge-bear text-xs px-1.5 py-0.5 rounded font-mono font-bold">{s.leverage}x</span>}
                       <span className={`text-xs px-2 py-0.5 rounded font-mono ${s.status === "active" ? "badge-bull" : "badge-gold"}`}>
                         {s.status === "active" ? "● Активен" : "○ Ожидание"}
                       </span>
@@ -515,101 +517,97 @@ function Signals({ signals }: { signals: SignalsState }) {
 
 // ─── History ──────────────────────────────────────────────────────────────────
 
-const DEMO_HISTORY = [
-  { id: 1, pair: "BTC/USDT", type: "LONG", entry: 64200, exit: 67100, pnl: 4.51, pnlUSD: 891, exchange: "Binance", date: "14 апр", duration: "3ч 12м" },
-  { id: 2, pair: "ETH/USDT", type: "SHORT", entry: 3650, exit: 3520, pnl: 3.56, pnlUSD: 712, exchange: "Bybit", date: "13 апр", duration: "5ч 40м" },
-  { id: 3, pair: "SOL/USDT", type: "LONG", entry: 192, exit: 184, pnl: -4.17, pnlUSD: -334, exchange: "OKX", date: "13 апр", duration: "2ч 05м" },
-  { id: 4, pair: "BNB/USDT", type: "LONG", entry: 578, exit: 608, pnl: 5.19, pnlUSD: 600, exchange: "Binance", date: "12 апр", duration: "8ч 22м" },
-  { id: 5, pair: "DOGE/USDT", type: "SHORT", entry: 0.198, exit: 0.185, pnl: 6.57, pnlUSD: 394, exchange: "Bybit", date: "12 апр", duration: "1ч 18м" },
-  { id: 6, pair: "XRP/USDT", type: "LONG", entry: 0.598, exit: 0.634, pnl: 6.02, pnlUSD: 482, exchange: "OKX", date: "11 апр", duration: "6ч 54м" },
-  { id: 7, pair: "BTC/USDT", type: "SHORT", entry: 69200, exit: 70100, pnl: -1.30, pnlUSD: -261, exchange: "Binance", date: "11 апр", duration: "4ч 31м" },
-];
-
 function History() {
   const isMobile = useIsMobile();
+  const [history, setHistory] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`${API_SIGNALS}?action=saved&limit=50`).then(r => r.json()).then(d => {
+      setHistory((d.signals || []).filter((s: any) => s.status === "closed"));
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  const totalPnl = history.reduce((acc, h) => acc + (h.pnl_usdt || 0), 0);
+  const wins = history.filter(h => h.result === "win").length;
+  const losses = history.filter(h => h.result === "loss").length;
+
   return (
     <div className="flex flex-col gap-3 fade-in">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm font-semibold">История сделок</span>
-        <div className="flex items-center gap-2 font-mono text-xs flex-wrap">
-          <span className="bull">+$2,879</span>
-          <span className="text-muted-foreground">—</span>
-          <span className="bear">-$595</span>
-          <span className="text-muted-foreground">|</span>
-          <span className="bull font-semibold">+$2,284 итого</span>
-        </div>
+        <span className="text-sm font-semibold">История сделок — реальные результаты</span>
+        {history.length > 0 && (
+          <div className="flex items-center gap-2 font-mono text-xs flex-wrap">
+            <span className={totalPnl >= 0 ? "bull" : "bear"}>{totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} итого</span>
+            <span className="text-muted-foreground">|</span>
+            <span className="bull">{wins}W</span>
+            <span className="bear">{losses}L</span>
+          </div>
+        )}
       </div>
 
       <div className="panel rounded overflow-hidden">
-        {isMobile ? (
-          /* Mobile: card per trade */
+        {loading ? (
+          <div className="flex items-center justify-center py-12 gap-2 text-muted-foreground">
+            <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+            <span className="text-xs font-mono">Загрузка истории...</span>
+          </div>
+        ) : history.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2">
+            <Icon name="Clock" size={28} className="opacity-30" />
+            <span className="text-sm">Пока нет закрытых сделок — AI начал работу сегодня</span>
+            <span className="text-xs">Первые результаты появятся через 4 часа</span>
+          </div>
+        ) : (
           <div>
-            {DEMO_HISTORY.map((h, i) => (
-              <div key={h.id} className="mobile-table-row fade-in" style={{ animationDelay: `${i * 0.04}s` }}>
+            {history.map((h, i) => (
+              <div key={i} className="mobile-table-row fade-in" style={{ animationDelay: `${i * 0.04}s` }}>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className={`font-mono text-xs font-bold ${h.type === "LONG" ? "bull" : "bear"}`}>{h.type}</span>
                     <span className="font-mono text-xs font-medium">{h.pair}</span>
                     <span className="text-xs text-muted-foreground">{h.exchange}</span>
+                    {h.leverage > 1 && <span className="badge-bear text-xs px-1 py-0.5 rounded font-mono">{h.leverage}x</span>}
                   </div>
                   <span className="text-xs text-muted-foreground">{h.date}</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <div className="flex gap-3 text-xs font-mono">
-                    <span className="text-muted-foreground">Вход: <span className="text-foreground">{h.entry.toLocaleString()}</span></span>
-                    <span className="text-muted-foreground">→ <span className="text-foreground">{h.exit.toLocaleString()}</span></span>
-                  </div>
+                  <span className="font-mono text-xs text-muted-foreground">Вход: {fmtPrice(h.entry)} · AI {h.confidence}%</span>
                   <div className="flex items-center gap-2">
-                    <span className={`font-mono text-sm font-semibold ${h.pnl > 0 ? "bull" : "bear"}`}>{h.pnl > 0 ? "+" : ""}{h.pnl}%</span>
-                    <span className={`font-mono text-xs ${h.pnlUSD > 0 ? "bull" : "bear"}`}>{h.pnlUSD > 0 ? "+" : ""}${Math.abs(h.pnlUSD)}</span>
+                    <span className={`font-mono text-sm font-semibold px-2 py-0.5 rounded ${h.result === "win" ? "badge-bull" : "badge-bear"}`}>
+                      {h.result === "win" ? "WIN" : "LOSS"} {h.result_pct != null ? `${h.result_pct >= 0 ? "+" : ""}${h.result_pct}%` : ""}
+                    </span>
+                    {h.pnl_usdt != null && (
+                      <span className={`font-mono text-xs font-semibold ${h.pnl_usdt >= 0 ? "bull" : "bear"}`}>
+                        {h.pnl_usdt >= 0 ? "+" : ""}${h.pnl_usdt}
+                      </span>
+                    )}
                   </div>
                 </div>
-                <div className="text-xs text-muted-foreground">{h.duration}</div>
               </div>
             ))}
           </div>
-        ) : (
-          /* Desktop: table */
-          <>
-            <div className="grid font-mono text-xs text-muted-foreground uppercase tracking-wider px-4 py-2 border-b border-border bg-card"
-              style={{ gridTemplateColumns: "1.2fr 70px 80px 1fr 1fr 1fr 80px 90px" }}>
-              <span>Пара</span><span>Тип</span><span>Биржа</span><span>Вход</span><span>Выход</span><span>P&L</span><span>Длит.</span><span>Дата</span>
-            </div>
-            {DEMO_HISTORY.map((h, i) => (
-              <div key={h.id} className="grid items-center px-4 py-2.5 border-b border-border/40 row-hover fade-in"
-                style={{ gridTemplateColumns: "1.2fr 70px 80px 1fr 1fr 1fr 80px 90px", animationDelay: `${i * 0.03}s` }}>
-                <span className="font-mono text-xs font-medium">{h.pair}</span>
-                <span className={`font-mono text-xs font-bold ${h.type === "LONG" ? "bull" : "bear"}`}>{h.type}</span>
-                <span className="text-xs text-muted-foreground">{h.exchange}</span>
-                <span className="font-mono text-xs">{h.entry.toLocaleString()}</span>
-                <span className="font-mono text-xs">{h.exit.toLocaleString()}</span>
-                <div className="flex items-center gap-2">
-                  <span className={`font-mono text-xs font-semibold ${h.pnl > 0 ? "bull" : "bear"}`}>{h.pnl > 0 ? "+" : ""}{h.pnl}%</span>
-                  <span className={`font-mono text-xs ${h.pnlUSD > 0 ? "bull" : "bear"}`}>{h.pnlUSD > 0 ? "+" : ""}${Math.abs(h.pnlUSD)}</span>
-                </div>
-                <span className="text-xs text-muted-foreground">{h.duration}</span>
-                <span className="text-xs text-muted-foreground">{h.date}</span>
-              </div>
-            ))}
-          </>
         )}
       </div>
 
-      <div className="grid grid-cols-3 md:grid-cols-5 gap-2 md:gap-3">
-        {[
-          { label: "Сделок", value: "148", icon: "Hash", pos: null },
-          { label: "Win Rate", value: "72.3%", icon: "Target", pos: true },
-          { label: "Лучшая", value: "+$891", icon: "Trophy", pos: true },
-          { label: "Ср. P&L", value: "+3.2%", icon: "TrendingUp", pos: true },
-          { label: "Просадка", value: "-4.17%", icon: "TrendingDown", pos: false },
-        ].map((s, i) => (
-          <div key={i} className="panel rounded p-2.5 md:p-3 text-center">
-            <Icon name={s.icon} size={12} className={`mx-auto mb-1 ${s.pos === true ? "text-bull" : s.pos === false ? "text-bear" : "text-muted-foreground"}`} />
-            <div className={`font-mono text-sm font-semibold ${s.pos === true ? "bull" : s.pos === false ? "bear" : ""}`}>{s.value}</div>
-            <div className="text-xs text-muted-foreground">{s.label}</div>
-          </div>
-        ))}
-      </div>
+      {history.length > 0 && (
+        <div className="grid grid-cols-3 md:grid-cols-5 gap-2 md:gap-3">
+          {[
+            { label: "Сделок", value: String(history.length), icon: "Hash", pos: null },
+            { label: "Win Rate", value: history.length > 0 ? `${Math.round(wins / history.length * 100)}%` : "—", icon: "Target", pos: wins > losses },
+            { label: "Макс. прибыль", value: history.length > 0 ? `+$${Math.max(...history.map(h => h.pnl_usdt || 0)).toFixed(0)}` : "—", icon: "Trophy", pos: true },
+            { label: "Итого", value: `${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(0)}`, icon: "TrendingUp", pos: totalPnl >= 0 },
+            { label: "Макс. убыток", value: history.length > 0 ? `$${Math.min(...history.map(h => h.pnl_usdt || 0)).toFixed(0)}` : "—", icon: "TrendingDown", pos: false },
+          ].map((s, i) => (
+            <div key={i} className="panel rounded p-2.5 md:p-3 text-center">
+              <Icon name={s.icon} size={12} className={`mx-auto mb-1 ${s.pos === true ? "text-bull" : s.pos === false ? "text-bear" : "text-muted-foreground"}`} />
+              <div className={`font-mono text-sm font-semibold ${s.pos === true ? "bull" : s.pos === false ? "bear" : ""}`}>{s.value}</div>
+              <div className="text-xs text-muted-foreground">{s.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -803,7 +801,7 @@ function Settings({ onRefresh }: { onRefresh: () => void }) {
         <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">AI Параметры</div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {[
-            { label: "Мин. уверенность сигнала", value: "65", unit: "%" },
+            { label: "Мин. уверенность сигнала", value: "90", unit: "%" },
             { label: "Период обновления", value: "5", unit: "мин" },
             { label: "ATR множитель TP", value: "3.5", unit: "x" },
             { label: "ATR множитель SL", value: "1.4", unit: "x" },
@@ -851,10 +849,10 @@ function Settings({ onRefresh }: { onRefresh: () => void }) {
 
 // ─── Statistics ──────────────────────────────────────────────────────────────
 
- 
 function StatisticsSection() {
-  const [stats, setStats] = useState<Record<string, unknown>>({});  
-  const [saved, setSaved] = useState<Record<string, unknown>[]>([]);
+  const [stats, setStats] = useState<any>(null);
+  const [saved, setSaved] = useState<any[]>([]);
+  const [portfolio, setPortfolio] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const isMobile = useIsMobile();
 
@@ -864,6 +862,7 @@ function StatisticsSection() {
       fetch(`${API_SIGNALS}?action=saved&limit=20`).then(r => r.json()),
     ]).then(([s, sg]) => {
       setStats(s.stats || null);
+      setPortfolio(s.stats?.portfolio || null);
       setSaved(sg.signals || []);
       setLoading(false);
     }).catch(() => setLoading(false));
@@ -883,12 +882,44 @@ function StatisticsSection() {
   const s = stats || {};
   const winRate = s.win_rate || 0;
   const winColor = winRate >= 60 ? "bull" : winRate >= 45 ? "gold" : "bear";
+  const p = portfolio || {};
+  const growthPct = p.pnl_pct || 0;
+  const growthX = p.balance && p.initial ? (p.balance / p.initial).toFixed(2) : "1.00";
 
   return (
     <div className="flex flex-col gap-3 fade-in">
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold">Честная статистика — только реальные закрытые сигналы</span>
         <span className="text-xs text-muted-foreground font-mono badge-gold px-2 py-0.5 rounded">100% прозрачность</span>
+      </div>
+
+      {/* Portfolio banner */}
+      <div className="panel rounded p-4 md:p-5 border border-primary/20" style={{ background: "linear-gradient(135deg, hsl(220 13% 9%), hsl(158 64% 48% / 0.05))" }}>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div>
+            <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Виртуальный портфель · старт $1,000 · 14 апр 2026</div>
+            <div className="font-mono text-2xl md:text-3xl font-bold bull">${p.balance ? p.balance.toLocaleString("en-US", { minimumFractionDigits: 2 }) : "1,000.00"}</div>
+            <div className="flex items-center gap-3 mt-1 flex-wrap">
+              <span className={`font-mono text-sm font-semibold ${growthPct >= 0 ? "bull" : "bear"}`}>{growthPct >= 0 ? "+" : ""}{growthPct.toFixed(2)}%</span>
+              <span className="font-mono text-sm text-muted-foreground">×{growthX}</span>
+              {p.pnl != null && <span className={`font-mono text-sm ${p.pnl >= 0 ? "bull" : "bear"}`}>{p.pnl >= 0 ? "+" : ""}${p.pnl?.toFixed(2) || "0.00"}</span>}
+              {p.drawdown > 0 && <span className="font-mono text-xs bear">Просадка: -{p.drawdown.toFixed(2)}%</span>}
+            </div>
+          </div>
+          {/* Mini growth chart */}
+          {p.daily && p.daily.length > 1 && (
+            <div className="w-40 h-12">
+              <svg width="100%" height="100%" viewBox="0 0 160 48" preserveAspectRatio="none">
+                {(() => {
+                  const pts = p.daily.map((d: any) => d.balance);
+                  const min = Math.min(...pts) * 0.995; const max = Math.max(...pts) * 1.005;
+                  const path = pts.map((v: number, i: number) => `${(i / (pts.length - 1)) * 160},${48 - ((v - min) / (max - min || 1)) * 44}`).join(" ");
+                  return <polyline points={path} fill="none" stroke="hsl(158 64% 48%)" strokeWidth="2" />;
+                })()}
+              </svg>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Key metrics */}
@@ -898,10 +929,10 @@ function StatisticsSection() {
           { label: "Win Rate", value: `${winRate}%`, icon: "Target", cls: winColor },
           { label: "Побед / Потерь", value: `${s.wins || 0} / ${s.losses || 0}`, icon: "TrendingUp", cls: "" },
           { label: "В ожидании", value: String(s.pending || 0), icon: "Clock", cls: "gold" },
-          { label: "Ср. прибыль", value: fmtPct(s.avg_win), icon: "ArrowUpRight", cls: "bull" },
+          { label: "Ср. прибыль (с плечом)", value: fmtPct(s.avg_win), icon: "ArrowUpRight", cls: "bull" },
           { label: "Ср. убыток", value: fmtPct(s.avg_loss), icon: "ArrowDownRight", cls: "bear" },
           { label: "Лучшая сделка", value: fmtPct(s.best_trade), icon: "Trophy", cls: "bull" },
-          { label: "Математич. ожидание", value: fmtPct(s.expectancy), icon: "BarChart2", cls: s.expectancy > 0 ? "bull" : "bear" },
+          { label: "Мат. ожидание", value: fmtPct(s.expectancy), icon: "BarChart2", cls: s.expectancy > 0 ? "bull" : "bear" },
         ].map((m, i) => (
           <div key={i} className="panel rounded p-3">
             <div className="flex items-center justify-between mb-1">
@@ -977,11 +1008,13 @@ function StatisticsSection() {
                 <span>вход: {fmtPrice(sig.entry)}</span>
                 <div className="flex items-center gap-1.5">
                   <span className={`px-1.5 py-0.5 rounded text-xs ${sig.confidence >= 92 ? "badge-bull" : "badge-gold"}`}>{sig.confidence}% AI</span>
+                  {sig.leverage > 1 && <span className="badge-bear text-xs px-1.5 py-0.5 rounded">{sig.leverage}x</span>}
+                  {sig.position_size > 0 && <span className="text-muted-foreground">${sig.position_size}</span>}
                 </div>
-                {/* Результат */}
                 {sig.result ? (
                   <span className={`font-semibold px-2 py-0.5 rounded ${sig.result === "win" ? "badge-bull" : "badge-bear"}`}>
                     {sig.result === "win" ? "WIN" : "LOSS"} {sig.result_pct != null ? `${sig.result_pct >= 0 ? "+" : ""}${sig.result_pct}%` : ""}
+                    {sig.pnl_usdt != null && <span className="ml-1">{sig.pnl_usdt >= 0 ? "+" : ""}${sig.pnl_usdt}</span>}
                   </span>
                 ) : (
                   <span className="badge-gold text-xs px-2 py-0.5 rounded">⏳ Открыт</span>
@@ -1011,6 +1044,7 @@ function AutoTradeSection({ signals }: { signals: SignalsState }) {
     Binance: { mode: "medium", active: false, max_pos: 50 },
     Bybit:   { mode: "medium", active: false, max_pos: 50 },
     OKX:     { mode: "medium", active: false, max_pos: 50 },
+    MEXC:    { mode: "medium", active: false, max_pos: 50 },
   });
   const [loading, setLoading] = useState(true);
   const [trading, setTrading] = useState<string | null>(null);
@@ -1047,8 +1081,8 @@ function AutoTradeSection({ signals }: { signals: SignalsState }) {
   };
 
   const MODES = {
-    medium: { label: "MEDIUM", color: "badge-gold", desc: "5% депозита · без плеча · макс 3 сделки · порог 90%" },
-    hard:   { label: "HARD",   color: "badge-bear",  desc: "15% депозита · 3x плечо · макс 5 сделок · порог 92%" },
+    medium: { label: "MEDIUM", color: "badge-gold", desc: "5% депозита · 2x плечо · макс 3 сделки · порог 90% · цель +5%/день" },
+    hard:   { label: "HARD",   color: "badge-bear",  desc: "15% депозита · 5x плечо · макс 5 сделок · порог 92% · цель +15%/день" },
   };
 
   return (
@@ -1090,8 +1124,8 @@ function AutoTradeSection({ signals }: { signals: SignalsState }) {
       )}
 
       {/* Exchange connections */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {["Binance", "Bybit", "OKX"].map(exch => {
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+        {["Binance", "Bybit", "OKX", "MEXC"].map(exch => {
           const cfg = configs[exch];
           const bal = balances[exch];
           const mode = MODES[cfg.mode as keyof typeof MODES];
@@ -1205,6 +1239,7 @@ function AutoTradeSection({ signals }: { signals: SignalsState }) {
             { exch: "Binance", steps: ["binance.com → Профиль → API Management", "Создать API ключ → включить Spot Trading", "Добавить IP в whitelist (опционально)", "Вставить BINANCE_API_KEY и BINANCE_SECRET_KEY в Секреты"] },
             { exch: "Bybit", steps: ["bybit.com → Аккаунт → API Management", "Создать новый ключ → Unified Trading", "Добавить BYBIT_API_KEY и BYBIT_SECRET_KEY в Секреты"] },
             { exch: "OKX", steps: ["okx.com → Аккаунт → API Keys → Создать", "Добавить OKX_API_KEY, OKX_SECRET_KEY и OKX_PASSPHRASE в Секреты"] },
+            { exch: "MEXC", steps: ["mexc.com → Профиль → API Management", "Создать API → включить Spot Trading", "Добавить MEXC_API_KEY и MEXC_SECRET_KEY в Секреты"] },
           ].map((e, i) => (
             <details key={i} className="border border-border rounded">
               <summary className="px-3 py-2 cursor-pointer font-medium text-foreground">{e.exch} — инструкция</summary>

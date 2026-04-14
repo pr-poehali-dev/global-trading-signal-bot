@@ -3,14 +3,19 @@ import json, os, psycopg2
 from datetime import datetime
 from exchange_clients import (binance_balance, binance_order, binance_oco,
                                bybit_balance, bybit_order,
-                               okx_balance, okx_order)
+                               okx_balance, okx_order,
+                               mexc_balance, mexc_order)
 
 HEADERS = {"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,POST,OPTIONS","Access-Control-Allow-Headers":"Content-Type","Content-Type":"application/json"}
 SCHEMA = "t_p73206386_global_trading_signa"
 
 TRADE_MODES = {
-    "medium": {"position_pct":0.05,"leverage":1,"max_sim":3,"min_conf":90,"desc":"Безопасный: 5% депозита, без плеча, макс 3 сделки"},
-    "hard":   {"position_pct":0.15,"leverage":3,"max_sim":5,"min_conf":92,"desc":"Агрессивный: 15% депозита, 3x плечо, макс 5 сделок"}
+    "medium": {"position_pct":0.05,"leverage":2,"max_sim":3,"min_conf":90,
+               "daily_target":0.05,"max_daily_loss":0.03,
+               "desc":"Безопасный: 5% депозита, 2x плечо, макс 3 сделки, цель +5%/день"},
+    "hard":   {"position_pct":0.15,"leverage":5,"max_sim":5,"min_conf":92,
+               "daily_target":0.15,"max_daily_loss":0.05,
+               "desc":"Агрессивный: 15% депозита, 5x плечо, макс 5 сделок, цель +15%/день"}
 }
 
 def db():
@@ -100,6 +105,10 @@ def check_balance(exchange):
         k,s,p = os.environ.get("OKX_API_KEY",""),os.environ.get("OKX_SECRET_KEY",""),os.environ.get("OKX_PASSPHRASE","")
         if not k: return {"ok":False,"error":"OKX API ключи не заданы — добавьте в Секреты"}
         return okx_balance(k,s,p)
+    if exchange == "MEXC":
+        k,s = os.environ.get("MEXC_API_KEY",""), os.environ.get("MEXC_SECRET_KEY","")
+        if not k: return {"ok":False,"error":"MEXC API ключи не заданы — добавьте в Секреты"}
+        return mexc_balance(k,s)
     return {"ok":False,"error":f"Неизвестная биржа: {exchange}"}
 
 def execute_trade(exchange, mode, signal):
@@ -135,6 +144,10 @@ def execute_trade(exchange, mode, signal):
         k,s,p = os.environ.get("OKX_API_KEY",""),os.environ.get("OKX_SECRET_KEY",""),os.environ.get("OKX_PASSPHRASE","")
         order = okx_order(sym, side, qty, k, s, p)
         if "error" in order: return {"ok":False,"error":order["error"]}
+    elif exchange == "MEXC":
+        k,s = os.environ.get("MEXC_API_KEY",""),os.environ.get("MEXC_SECRET_KEY","")
+        order = mexc_order(sym, side, qty, k, s)
+        if "error" in order: return {"ok":False,"error":order["error"]}
     else:
         return {"ok":False,"error":"Неизвестная биржа"}
 
@@ -160,7 +173,7 @@ def handler(event: dict, context) -> dict:
         exch = params.get("exchange") or body.get("exchange","Binance")
         return {"statusCode":200,"headers":HEADERS,"body":json.dumps(check_balance(exch))}
     if action == "config":
-        return {"statusCode":200,"headers":HEADERS,"body":json.dumps({"configs":get_exchange_configs(),"modes":TRADE_MODES,"exchanges":["Binance","Bybit","OKX"]})}
+        return {"statusCode":200,"headers":HEADERS,"body":json.dumps({"configs":get_exchange_configs(),"modes":TRADE_MODES,"exchanges":["Binance","Bybit","OKX","MEXC"]})}
     if action == "save_config":
         save_exchange_config(body.get("exchange","Binance"),body.get("mode","medium"),float(body.get("max_position",50)),bool(body.get("active",False)))
         return {"statusCode":200,"headers":HEADERS,"body":json.dumps({"ok":True})}

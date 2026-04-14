@@ -95,3 +95,27 @@ def okx_balance(api_key, secret, passphrase):
 def okx_order(symbol, side, qty, api_key, secret, passphrase):
     inst = symbol.replace("USDT","-USDT")
     return okx_req("/api/v5/trade/order","POST",{"instId":inst,"tdMode":"cash","side":"buy" if side=="BUY" else "sell","ordType":"market","sz":str(round(qty,6))},api_key,secret,passphrase)
+
+# MEXC
+def mexc_sign(params, secret):
+    q = urllib.parse.urlencode(params)
+    return hmac.new(secret.encode(), q.encode(), hashlib.sha256).hexdigest()
+
+def mexc_req(endpoint, params, api_key, secret, method="GET"):
+    params["timestamp"] = int(time.time() * 1000)
+    params["signature"] = mexc_sign(params, secret)
+    q = urllib.parse.urlencode(params)
+    base = "https://api.mexc.com"
+    hdrs = {"X-MEXC-APIKEY": api_key, "Content-Type": "application/json"}
+    if method == "GET":
+        return fetch_url(f"{base}{endpoint}?{q}", headers=hdrs)
+    return fetch_url(f"{base}{endpoint}?{q}", "POST", hdrs)
+
+def mexc_balance(api_key, secret):
+    d = mexc_req("/api/v3/account", {}, api_key, secret)
+    if "error" in d or "balances" not in d: return {"error": d.get("error","err")}
+    usdt = next((float(b["free"]) for b in d["balances"] if b["asset"]=="USDT"), 0)
+    return {"usdt": round(usdt,2), "exchange": "MEXC", "ok": True}
+
+def mexc_order(symbol, side, qty, api_key, secret):
+    return mexc_req("/api/v3/order", {"symbol":symbol,"side":side,"type":"MARKET","quantity":str(round(qty,6))}, api_key, secret, "POST")
