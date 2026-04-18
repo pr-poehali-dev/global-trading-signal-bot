@@ -819,6 +819,35 @@ function BotSection() {
     setActing(false);
   };
 
+  const handlePing = async () => {
+    setActing(true);
+    addLog("Проверяю подключение к MEXC...");
+    try {
+      const r = await fetch(`${API_MEXC_BOT}?action=ping`);
+      const d = await r.json();
+      if (d.balance !== undefined) {
+        addLog(`✅ MEXC подключён! Баланс фьючерсов: $${d.balance?.toFixed(2)} USDT`);
+        if (d.btc_price) addLog(`✅ BTC цена: $${d.btc_price?.toLocaleString("en-US", {maximumFractionDigits:0})}`);
+      } else {
+        addLog(`❌ Ошибка: ${d.error || JSON.stringify(d).slice(0,150)}`);
+      }
+    } catch (e) { addLog("❌ Нет соединения"); }
+    setActing(false);
+  };
+
+  const handleTest = async () => {
+    setActing(true);
+    addLog("🧪 Запускаю тестовую сделку BTC_USDT (1 контракт)...");
+    try {
+      const r = await fetch(`${API_MEXC_BOT}?action=test`);
+      const d = await r.json();
+      (d.log as string[] || []).forEach((l: string) => addLog(l));
+      addLog(d.ok ? "✅ Тест прошёл успешно!" : "❌ Тест не прошёл — смотри лог");
+      await load();
+    } catch (e) { addLog("❌ Нет соединения"); }
+    setActing(false);
+  };
+
   const isRunning  = stats?.running || false;
   const openTrades = stats?.open_trades || [];
   const history    = stats?.history || [];
@@ -854,23 +883,30 @@ function BotSection() {
               </div>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <button onClick={handlePing} disabled={acting}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-border transition-all disabled:opacity-40 font-mono text-muted-foreground hover:text-foreground">
+              {acting ? <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" /> : <Icon name="Wifi" size={13} />}
+              Пинг
+            </button>
+            <button onClick={handleTest} disabled={acting}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-border transition-all disabled:opacity-40 font-mono"
+              style={{ borderColor: "hsl(43 96% 56% / 0.5)", color: "hsl(43 96% 56%)" }}>
+              {acting ? <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" /> : <Icon name="FlaskConical" size={13} />}
+              Тест сделка
+            </button>
             {isRunning ? (
               <button onClick={handleStop} disabled={acting}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-sm transition-all disabled:opacity-40"
+                className="flex items-center gap-2 px-5 py-2 rounded-lg font-semibold text-sm transition-all disabled:opacity-40"
                 style={{ background: "hsl(0 72% 51%)", color: "white" }}>
-                {acting
-                  ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  : <Icon name="Square" size={14} />}
+                {acting ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Icon name="Square" size={14} />}
                 Остановить
               </button>
             ) : (
               <button onClick={handleStart} disabled={acting}
-                className="flex items-center gap-2 px-6 py-2.5 rounded-lg font-semibold text-sm transition-all disabled:opacity-40"
+                className="flex items-center gap-2 px-5 py-2 rounded-lg font-semibold text-sm transition-all disabled:opacity-40"
                 style={{ background: "hsl(158 64% 48%)", color: "hsl(220 13% 8%)" }}>
-                {acting
-                  ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                  : <Icon name="Play" size={14} />}
+                {acting ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" /> : <Icon name="Play" size={14} />}
                 Запустить бот
               </button>
             )}
@@ -893,10 +929,35 @@ function BotSection() {
         </div>
 
         {/* Баланс */}
-        {stats?.balance > 0 && (
-          <div className="flex items-center justify-between text-sm font-mono border-t border-border/30 pt-3">
-            <span className="text-muted-foreground">Баланс MEXC Futures:</span>
-            <span className="font-bold bull">${stats.balance.toFixed(2)} USDT</span>
+        <div className="border-t border-border/30 pt-3 flex items-center justify-between text-sm font-mono">
+          <span className="text-muted-foreground">Баланс MEXC Futures:</span>
+          {(stats?.balance || 0) > 0.01
+            ? <span className="font-bold bull">${(stats?.balance || 0).toFixed(2)} USDT</span>
+            : <span className="text-xs font-mono bear flex items-center gap-1.5">
+                <Icon name="AlertTriangle" size={12} />
+                Пустой — нужно пополнить
+              </span>
+          }
+        </div>
+
+        {/* Инструкция пополнения */}
+        {(stats?.balance || 0) < 1 && (
+          <div className="rounded-lg p-3 border text-xs"
+            style={{ background: "hsl(43 96% 56% / 0.05)", borderColor: "hsl(43 96% 56% / 0.3)" }}>
+            <div className="flex items-start gap-2">
+              <Icon name="AlertTriangle" size={13} className="shrink-0 mt-0.5" style={{ color: "hsl(43 96% 56%)" }} />
+              <div className="flex flex-col gap-1">
+                <span className="font-semibold" style={{ color: "hsl(43 96% 56%)" }}>Нужно пополнить фьючерсный счёт MEXC</span>
+                <span className="text-muted-foreground">Сейчас на фьючерсном счёте пусто — бот не сможет открывать сделки.</span>
+                <div className="mt-1 flex flex-col gap-0.5 text-foreground">
+                  <div>1. Войди на <strong>mexc.com</strong></div>
+                  <div>2. Активы → <strong>Перевод средств</strong></div>
+                  <div>3. Откуда: Спот → Куда: <strong>Фьючерсы</strong></div>
+                  <div>4. Сумма: минимум <strong>$20–50 USDT</strong></div>
+                  <div>5. Нажми «Тест сделка» — убедись что всё ОК</div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </div>
