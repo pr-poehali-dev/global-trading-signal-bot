@@ -503,12 +503,15 @@ function StatsSection() {
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const load = () => {
+    setLoading(true);
     fetch(`${API_SIGNALS}?action=stats`)
       .then(r => r.json())
       .then(d => { setStats(d.stats); setLoading(false); })
       .catch(() => setLoading(false));
-  }, []);
+  };
+
+  useEffect(() => { load(); }, []);
 
   if (loading) return (
     <div className="flex items-center justify-center py-16">
@@ -518,103 +521,176 @@ function StatsSection() {
   if (!stats) return <div className="text-sm text-muted-foreground text-center py-8">Нет данных</div>;
 
   const p = stats.portfolio || {};
+  const pnlPositive = (p.pnl || 0) >= 0;
 
   return (
     <div className="flex flex-col gap-4 fade-in">
-      <span className="text-sm font-semibold">Статистика</span>
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold">Статистика</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground font-mono">Только реальные закрытые сделки</span>
+          <button onClick={load} className="p-1 rounded border border-border text-muted-foreground hover:text-foreground transition-colors">
+            <Icon name="RefreshCw" size={11} />
+          </button>
+        </div>
+      </div>
 
-      {/* Портфель */}
-      {p.balance !== undefined && (
-        <div className="panel rounded p-4" style={{ background: "linear-gradient(135deg, hsl(158 64% 48% / 0.08), hsl(220 13% 11%))" }}>
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Виртуальный портфель · старт $1,000</div>
-          <div className="flex flex-wrap gap-6">
+      {/* Портфель — главная карточка */}
+      <div className="rounded-lg p-4 border"
+        style={{
+          background: pnlPositive
+            ? "linear-gradient(135deg, hsl(158 64% 48% / 0.1), hsl(220 13% 11%))"
+            : "linear-gradient(135deg, hsl(0 72% 51% / 0.1), hsl(220 13% 11%))",
+          borderColor: pnlPositive ? "hsl(158 64% 48% / 0.3)" : "hsl(0 72% 51% / 0.3)",
+        }}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-xs text-muted-foreground uppercase tracking-wider">
+            Виртуальный банк · старт ${p.initial?.toFixed(0) || "1,000"} · {p.started || "—"}
+          </div>
+          <div className="text-xs font-mono text-muted-foreground">Результаты реальных сигналов</div>
+        </div>
+        <div className="flex flex-wrap gap-6 items-end">
+          <div>
+            <div className="font-mono text-4xl font-bold" style={{ color: pnlPositive ? "hsl(158 64% 48%)" : "hsl(0 72% 51%)" }}>
+              ${p.balance?.toFixed(2) || "1000.00"}
+            </div>
+            <div className={`text-sm font-mono mt-1 flex items-center gap-2 ${pnlPositive ? "bull" : "bear"}`}>
+              <span>{pnlPositive ? "+" : ""}${p.pnl?.toFixed(2) || "0.00"}</span>
+              <span className="opacity-70">({pnlPositive ? "+" : ""}{p.pnl_pct?.toFixed(2) || "0.00"}%)</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-4 text-center">
             <div>
-              <div className="font-mono text-3xl font-bold bull">${p.balance?.toFixed(2)}</div>
-              <div className={`text-sm font-mono mt-1 ${p.pnl >= 0 ? "bull" : "bear"}`}>
-                {p.pnl >= 0 ? "+" : ""}${p.pnl?.toFixed(2)} ({p.pnl_pct >= 0 ? "+" : ""}{p.pnl_pct?.toFixed(2)}%)
+              <div className="font-mono text-2xl font-bold bull">{p.wins || 0}</div>
+              <div className="text-xs text-muted-foreground">Прибыльных</div>
+            </div>
+            <div>
+              <div className="font-mono text-2xl font-bold bear">{p.losses || 0}</div>
+              <div className="text-xs text-muted-foreground">Убыточных</div>
+            </div>
+            <div>
+              <div className={`font-mono text-2xl font-bold ${stats.win_rate >= 55 ? "bull" : stats.win_rate >= 45 ? "" : "bear"}`}>
+                {stats.win_rate}%
               </div>
-            </div>
-            <div className="flex flex-col justify-center">
-              <div className="text-xs text-muted-foreground">Сигналов</div>
-              <div className="font-mono text-xl font-bold">{stats.total}</div>
-            </div>
-            <div className="flex flex-col justify-center">
               <div className="text-xs text-muted-foreground">Win Rate</div>
-              <div className={`font-mono text-xl font-bold ${stats.win_rate >= 60 ? "bull" : "bear"}`}>{stats.win_rate}%</div>
             </div>
           </div>
         </div>
-      )}
+        {/* Честная подпись */}
+        <div className="mt-3 text-xs text-muted-foreground border-t border-border/30 pt-3 flex items-start gap-1.5">
+          <Icon name="Info" size={11} className="shrink-0 mt-0.5" />
+          <span>
+            Win Rate считается только по <strong className="text-foreground">закрытым</strong> сигналам (TP/SL/timeout).
+            Активные сигналы в статистику не включены до закрытия.
+          </span>
+        </div>
+      </div>
 
-      {/* Основные метрики */}
+      {/* Сетка метрик */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         {[
-          { label: "Всего сигналов",  val: stats.total,   cls: "",                              sub: "за всё время" },
-          { label: "Pump",            val: stats.pumps,   cls: "bull",                          sub: "рост + объём" },
-          { label: "Dump",            val: stats.dumps,   cls: "bear",                          sub: "падение + объём" },
-          { label: "Win Rate",        val: `${stats.win_rate}%`, cls: stats.win_rate >= 60 ? "bull" : "bear", sub: `${stats.wins}W / ${stats.losses}L` },
+          { label: "Всего сигналов", val: stats.total,    sub: "за всё время",        cls: "" },
+          { label: "Закрытых",       val: stats.closed,   sub: "с результатом",       cls: "" },
+          { label: "Активных",       val: stats.active,   sub: "в процессе (4ч)",     cls: "gold" },
+          { label: "Avg Score",      val: `${stats.avg_score}/100`, sub: "качество фильтра", cls: "" },
         ].map((m, i) => (
           <div key={i} className="panel rounded p-3">
             <div className="text-xs text-muted-foreground mb-1">{m.label}</div>
-            <div className={`font-mono text-2xl font-bold ${m.cls}`}>{m.val}</div>
-            <div className="text-xs text-muted-foreground mt-1">{m.sub}</div>
+            <div className={`font-mono text-xl font-bold ${m.cls}`}>{m.val}</div>
+            <div className="text-xs text-muted-foreground mt-0.5">{m.sub}</div>
           </div>
         ))}
       </div>
 
-      {/* Доп метрики */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+      {/* Pump vs Dump + доходность */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         {[
-          { label: "Средний Score",     val: `${stats.avg_score}/100`, sub: "качество сигналов" },
-          { label: "Средний Win",       val: `+${stats.avg_win_pct}%`, sub: "доходность" },
-          { label: "Общий P&L",         val: `${stats.total_pnl >= 0 ? "+" : ""}$${stats.total_pnl}`, sub: "виртуальный" },
+          { label: "Pump-сигналы",  val: stats.pumps, sub: "рост цены + объём", cls: "bull" },
+          { label: "Dump-сигналы",  val: stats.dumps, sub: "падение + объём",   cls: "bear" },
+          { label: "Avg Win",       val: `+${stats.avg_win_pct}%`, sub: "средняя прибыль", cls: "bull" },
+          { label: "Avg Loss",      val: `${stats.avg_loss_pct}%`, sub: "средний убыток",  cls: "bear" },
         ].map((m, i) => (
           <div key={i} className="panel rounded p-3">
             <div className="text-xs text-muted-foreground mb-1">{m.label}</div>
-            <div className="font-mono text-lg font-bold">{m.val}</div>
-            <div className="text-xs text-muted-foreground">{m.sub}</div>
+            <div className={`font-mono text-xl font-bold ${m.cls}`}>{m.val}</div>
+            <div className="text-xs text-muted-foreground mt-0.5">{m.sub}</div>
           </div>
         ))}
       </div>
 
       {/* По биржам */}
       {stats.by_exchange?.length > 0 && (
-        <div className="panel rounded p-3">
+        <div className="panel rounded p-4">
           <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">По биржам</div>
-          <div className="flex flex-col gap-2">
-            {stats.by_exchange.map((e: any, i: number) => (
-              <div key={i} className="flex items-center gap-3">
-                <div className="w-16 text-xs font-mono">{e.exchange}</div>
-                <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
-                  <div className="h-full rounded-full bg-primary"
-                    style={{ width: `${stats.total > 0 ? (e.total / stats.total) * 100 : 0}%` }} />
-                </div>
-                <div className="text-xs font-mono text-muted-foreground w-16 text-right">{e.total} сигн.</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* График активности */}
-      {stats.daily?.length > 0 && (
-        <div className="panel rounded p-3">
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Активность (14 дней)</div>
-          <div className="flex items-end gap-1 h-24">
-            {[...stats.daily].reverse().slice(0, 14).map((d: any, i: number) => {
-              const max = Math.max(...stats.daily.map((x: any) => x.count));
-              const h = max > 0 ? Math.max((d.count / max) * 100, 4) : 4;
+          <div className="flex flex-col gap-3">
+            {stats.by_exchange.map((e: any, i: number) => {
+              const wr = e.wins + e.losses > 0 ? Math.round(e.wins / (e.wins + e.losses) * 100) : null;
               return (
-                <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
-                  <div className="w-full rounded-t transition-all" style={{ height: `${h}%`, background: "hsl(158 64% 48% / 0.6)" }} />
-                  <div className="text-[9px] font-mono text-muted-foreground leading-none">{d.date?.slice(5)}</div>
-                  <div className="text-[9px] font-mono text-foreground leading-none">{d.count}</div>
+                <div key={i} className="flex items-center gap-3">
+                  <div className="w-16 text-xs font-mono font-semibold">{e.exchange}</div>
+                  <div className="flex-1 h-2 bg-secondary rounded-full overflow-hidden">
+                    <div className="h-full rounded-full"
+                      style={{
+                        width: `${stats.total > 0 ? (e.total/stats.total)*100 : 0}%`,
+                        background: "hsl(158 64% 48% / 0.7)"
+                      }} />
+                  </div>
+                  <div className="text-xs font-mono text-muted-foreground w-16 text-right">{e.total}</div>
+                  {wr !== null && (
+                    <div className={`text-xs font-mono w-12 text-right font-bold ${wr >= 55 ? "bull" : wr >= 45 ? "" : "bear"}`}>
+                      {wr}%W
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
         </div>
       )}
+
+      {/* График активности + win/loss */}
+      {stats.daily?.length > 0 && (
+        <div className="panel rounded p-4">
+          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Активность — 30 дней</div>
+          <div className="flex items-end gap-0.5 h-28">
+            {[...stats.daily].reverse().slice(0, 30).map((d: any, i: number) => {
+              const max = Math.max(...stats.daily.map((x: any) => x.count), 1);
+              const h   = Math.max((d.count / max) * 100, 3);
+              const wr  = d.count > 0 && d.wins !== undefined ? Math.round(d.wins / d.count * 100) : 50;
+              return (
+                <div key={i} className="flex-1 flex flex-col items-center gap-0.5" title={`${d.date}: ${d.count} сигналов`}>
+                  <div className="w-full rounded-t" style={{
+                    height: `${h}%`,
+                    background: wr >= 55 ? "hsl(158 64% 48% / 0.7)" : wr >= 40 ? "hsl(43 96% 56% / 0.7)" : "hsl(0 72% 51% / 0.7)"
+                  }} />
+                  {i % 5 === 0 && (
+                    <div className="text-[8px] font-mono text-muted-foreground leading-none">{d.date?.slice(5)}</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
+            <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-sm" style={{background:"hsl(158 64% 48%)"}}/> ≥55% Win</div>
+            <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-sm" style={{background:"hsl(43 96% 56%)"}}/> 40–55%</div>
+            <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-sm" style={{background:"hsl(0 72% 51%)"}}/> &lt;40% Win</div>
+          </div>
+        </div>
+      )}
+
+      {/* Disclaimer */}
+      <div className="rounded-lg p-3 border border-border/40 text-xs text-muted-foreground"
+        style={{ background: "hsl(220 13% 8%)" }}>
+        <div className="flex items-start gap-2">
+          <Icon name="AlertTriangle" size={13} className="shrink-0 mt-0.5 text-gold" />
+          <span>
+            <strong className="text-foreground">Важно:</strong> Виртуальный банк не связан с реальными деньгами.
+            Статистика отражает результаты алгоритма на исторических данных.
+            Прошлые результаты не гарантируют будущую доходность.
+            Торгуйте только суммами, которые готовы потерять.
+          </span>
+        </div>
+      </div>
     </div>
   );
 }

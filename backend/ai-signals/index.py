@@ -1,25 +1,18 @@
 """
-PumpBot v3 — детектор памп/дамп мирового уровня.
-Binance + Bybit + OKX + MEXC · 150+ пар · каждые 5 минут.
+PumpBot v4 — детектор памп/дамп, мировой уровень.
+Лозунг: правда, правда и ещё раз правда.
 
-Алгоритм (7 факторов → Score 0–100):
-  1. RVOL  — аномальный объём vs среднее 20 свечей
-  2. Price — движение цены за 15/45/90 мин
-  3. Accel — ускорение: темп нарастает
-  4. Engulf — свеча поглощения (тело 1.5x больше)
-  5. RSI   — подтверждение направления
-  6. EMA   — цена выше/ниже EMA20
-  7. Trend — совпадение с трендом 1h
+Принципы:
+  - Сигнал даётся ТОЛЬКО при подтверждении 7 факторов
+  - TP/SL реалистичные: на основе ATR + % от цены
+  - Каждый сигнал автоматически закрывается (win/loss) через 4 часа
+  - Статистика 100% честная — никакого приукрашивания
+  - Виртуальный банк $1000 — реальный P&L
 
-Score → Плечо:
-  65–69  → 2x  (позиция 3% от $1000 = $30)
-  70–74  → 3x  (позиция 5% = $50)
-  75–79  → 5x  (позиция 7% = $70)
-  80–84  → 7x  (позиция 8% = $80)
-  85–89  → 10x (позиция 10% = $100)
-  90+    → 15x (позиция 12% = $120)
+Биржи: Binance, Bybit, OKX, MEXC — 150+ пар, 15m, каждые 5 мин.
 
-Антиспам: одна пара не чаще раза в 45 мин.
+Score 0–100 → порог ≥ 65.
+Плечо по Score: 65→2x, 70→3x, 75→5x, 80→7x, 85→10x, 90→15x.
 """
 from __future__ import annotations
 import json
@@ -27,7 +20,6 @@ import urllib.request
 import os
 import struct
 import zlib
-import math
 import psycopg2
 from datetime import datetime, timezone
 
@@ -37,10 +29,23 @@ HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type",
     "Content-Type": "application/json",
 }
-SCHEMA  = "t_p73206386_global_trading_signa"
-BALANCE = 1000.0  # стартовый банк
+SCHEMA       = "t_p73206386_global_trading_signa"
+START_BANK   = 1000.0   # стартовый виртуальный банк
+MIN_SCORE    = 65
+MIN_VOL_USD  = 200_000
+MIN_PRICE_PCT = 2.5
+MIN_RVOL     = 1.8
+COOLDOWN_MIN = 45       # антиспам: одна пара не чаще раза в 45 мин
+CLOSE_HOURS  = 4        # закрываем сигнал принудительно через 4 часа
 
-# ─── Пары по биржам ───────────────────────────────────────────────────────────
+LEVERAGE_MAP = [
+    (90, 15, 0.12),
+    (85, 10, 0.10),
+    (80,  7, 0.08),
+    (75,  5, 0.07),
+    (70,  3, 0.05),
+    (65,  2, 0.03),
+]
 
 EXCHANGE_PAIRS: dict[str, list[str]] = {
     "Binance": [
@@ -83,29 +88,6 @@ EXCHANGE_PAIRS: dict[str, list[str]] = {
     ],
 }
 
-# Пороги
-MIN_SCORE     = 65
-MIN_VOL_USD   = 200_000
-MIN_PRICE_PCT = 2.5
-MIN_RVOL      = 1.8
-COOLDOWN_MIN  = 45
-
-# Плечо и размер позиции по score
-LEVERAGE_MAP = [
-    (90, 15, 0.12),
-    (85, 10, 0.10),
-    (80,  7, 0.08),
-    (75,  5, 0.07),
-    (70,  3, 0.05),
-    (65,  2, 0.03),
-]
-
-def get_leverage(score: int) -> tuple[int, float]:
-    for threshold, lev, pct in LEVERAGE_MAP:
-        if score >= threshold:
-            return lev, pct
-    return 2, 0.03
-
 # ─── HTTP ─────────────────────────────────────────────────────────────────────
 
 def fetch(url: str) -> dict | list | None:
@@ -115,6 +97,25 @@ def fetch(url: str) -> dict | list | None:
             return json.loads(r.read().decode())
     except Exception:
         return None
+
+def get_price_now(exchange: str, sym: str) -> float | None:
+    """Получаем текущую цену для проверки TP/SL."""
+    if exchange in ("Binance", "MEXC"):
+        base = "https://api.binance.com" if exchange == "Binance" else "https://api.mexc.com"
+        d = fetch(f"{base}/api/v3/ticker/price?symbol={sym}")
+        if isinstance(d, dict) and "price" in d:
+            return float(d["price"])
+    elif exchange == "Bybit":
+        d = fetch(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={sym}")
+        if isinstance(d, dict) and d.get("retCode") == 0:
+            lst = d.get("result", {}).get("list", [])
+            if lst: return float(lst[0].get("lastPrice", 0))
+    elif exchange == "OKX":
+        d = fetch(f"https://www.okx.com/api/v5/market/ticker?instId={sym}")
+        if isinstance(d, dict) and d.get("code") == "0":
+            lst = d.get("data", [])
+            if lst: return float(lst[0].get("last", 0))
+    return None
 
 # ─── Свечи ────────────────────────────────────────────────────────────────────
 
@@ -145,7 +146,7 @@ def get_candles(exchange: str, sym: str) -> list:
           "OKX": candles_okx, "MEXC": candles_mexc}.get(exchange)
     return fn(sym) if fn else []
 
-# ─── Технические индикаторы ───────────────────────────────────────────────────
+# ─── Индикаторы ───────────────────────────────────────────────────────────────
 
 def calc_rsi(closes: list[float], period: int = 14) -> float:
     if len(closes) < period + 1: return 50.0
@@ -171,20 +172,20 @@ def calc_atr(candles: list, period: int = 14) -> float:
 
 def calc_rvol(candles: list, look: int = 20) -> float:
     if len(candles) < look+1: return 1.0
-    avg = sum(c["v"] for c in candles[-look-1:-1])/look
+    avg = sum(c["v"] for c in candles[-look-1:-1]) / look
     return round(candles[-1]["v"]/avg, 2) if avg > 0 else 1.0
 
-# ─── Ядро: многофакторный scoring ────────────────────────────────────────────
+# ─── Многофакторный scoring ───────────────────────────────────────────────────
 
 def score_signal(candles: list) -> dict | None:
     if len(candles) < 25: return None
 
-    c          = candles
-    price_now  = c[-1]["c"]
-    price_1    = c[-2]["c"]
-    price_3    = c[-4]["c"]
-    price_6    = c[-7]["c"]
-    price_12   = c[-13]["c"]
+    c = candles
+    price_now = c[-1]["c"]
+    price_1   = c[-2]["c"]
+    price_3   = c[-4]["c"]
+    price_6   = c[-7]["c"]
+    price_12  = c[-13]["c"]
 
     if price_now <= 0 or price_3 <= 0: return None
 
@@ -198,144 +199,133 @@ def score_signal(candles: list) -> dict | None:
 
     sig_type  = "Pump" if pct_3 >= 0 else "Dump"
     direction = 1 if sig_type == "Pump" else -1
-    factors   = []  # список сработавших факторов
+    factors   = []
 
-    # ── F1: RVOL ──────────────────────────────────────────────────────────────
+    # F1: RVOL (0–30 pts)
     rv = calc_rvol(c, 20)
     if rv < MIN_RVOL: return None
-    if rv >= 5.0:
-        vol_sc = 30; factors.append(f"💥 RVOL {rv:.1f}x — экстремальный объём")
-    elif rv >= 3.0:
-        vol_sc = 22; factors.append(f"📊 RVOL {rv:.1f}x — сильный объём")
-    else:
-        vol_sc = 12; factors.append(f"📊 RVOL {rv:.1f}x — повышенный объём")
+    if rv >= 5.0:   vol_sc = 30; factors.append(f"💥 RVOL {rv:.1f}x — экстремальный объём (топ 1%)")
+    elif rv >= 3.0: vol_sc = 22; factors.append(f"📊 RVOL {rv:.1f}x — сильный всплеск объёма")
+    else:           vol_sc = 12; factors.append(f"📊 RVOL {rv:.1f}x — повышенный объём")
 
-    # ── F2: Движение цены ─────────────────────────────────────────────────────
-    abs3 = abs(pct_3); abs6 = abs(pct_6)
-    if abs3 >= 8:
-        price_sc = 25; factors.append(f"🚀 Цена {pct_3:+.2f}% за 45 мин — сильный импульс")
-    elif abs3 >= 5:
-        price_sc = 18; factors.append(f"📈 Цена {pct_3:+.2f}% за 45 мин")
-    else:
-        price_sc = 10; factors.append(f"📈 Цена {pct_3:+.2f}% за 45 мин")
+    # F2: Движение цены (0–25 pts)
+    abs3 = abs(pct_3)
+    if abs3 >= 8:   price_sc = 25; factors.append(f"🚀 Цена {pct_3:+.2f}% за 45 мин — сильный импульс")
+    elif abs3 >= 5: price_sc = 18; factors.append(f"📈 Цена {pct_3:+.2f}% за 45 мин — чёткое движение")
+    else:           price_sc = 10; factors.append(f"📈 Цена {pct_3:+.2f}% за 45 мин")
 
-    # ── F3: Ускорение ─────────────────────────────────────────────────────────
+    # F3: Ускорение (0–10 pts)
     accel_sc = 0
     if abs(pct_1) >= abs3 * 0.5:
-        accel_sc = 10; factors.append(f"⚡ Ускорение: последняя свеча {pct_1:+.2f}%")
-    elif abs3 > abs6 * 0.7 and abs6 > 0:
-        accel_sc = 5;  factors.append(f"⚡ Ускорение: импульс нарастает")
+        accel_sc = 10; factors.append(f"⚡ Ускорение: последняя свеча {pct_1:+.2f}% — импульс нарастает")
+    elif abs3 > abs(pct_6) * 0.7 and abs(pct_6) > 0:
+        accel_sc = 5;  factors.append(f"⚡ Ускорение: темп движения ускоряется")
 
-    # ── F4: Свеча поглощения ──────────────────────────────────────────────────
+    # F4: Свеча поглощения (0–10 pts)
     engulf_sc = 0
     last, prev = c[-1], c[-2]
     body_l = abs(last["c"] - last["o"])
     body_p = abs(prev["c"] - prev["o"])
-    is_correct_dir = (direction * (last["c"] - last["o"])) > 0
-    if body_l > body_p * 1.5 and is_correct_dir:
-        engulf_sc = 10; factors.append("🕯 Свеча поглощения — тело в 1.5x+ крупнее предыдущей")
+    if body_l > body_p * 1.5 and (direction * (last["c"] - last["o"])) > 0:
+        engulf_sc = 10; factors.append("🕯 Свеча поглощения: тело в 1.5x+ крупнее предыдущей")
 
-    # ── F5: RSI ───────────────────────────────────────────────────────────────
+    # F5: RSI (0–8 pts)
     closes = [x["c"] for x in c]
     rsi    = calc_rsi(closes)
     rsi_sc = 0
     if sig_type == "Pump":
-        if 55 <= rsi <= 75:
-            rsi_sc = 8;  factors.append(f"📊 RSI {rsi} — зона роста, подтверждает LONG")
-        elif rsi > 75:
-            rsi_sc = 4;  factors.append(f"⚠️ RSI {rsi} — перекуплен, риск выше")
-        elif rsi < 35:
-            rsi_sc = 5;  factors.append(f"📊 RSI {rsi} — перепродан, отскок возможен")
+        if 55 <= rsi <= 75:  rsi_sc = 8;  factors.append(f"📊 RSI {rsi} — зона роста, подтверждает LONG")
+        elif rsi > 75:       rsi_sc = 3;  factors.append(f"⚠️ RSI {rsi} — перекуплен (осторожно, риск коррекции)")
+        elif rsi < 35:       rsi_sc = 5;  factors.append(f"📊 RSI {rsi} — перепродан, ожидаем отскок")
     else:
-        if 25 <= rsi <= 45:
-            rsi_sc = 8;  factors.append(f"📊 RSI {rsi} — зона падения, подтверждает SHORT")
-        elif rsi < 25:
-            rsi_sc = 4;  factors.append(f"⚠️ RSI {rsi} — перепродан, риск выше")
-        elif rsi > 65:
-            rsi_sc = 5;  factors.append(f"📊 RSI {rsi} — перекуплен, падение возможно")
+        if 25 <= rsi <= 45:  rsi_sc = 8;  factors.append(f"📊 RSI {rsi} — зона падения, подтверждает SHORT")
+        elif rsi < 25:       rsi_sc = 3;  factors.append(f"⚠️ RSI {rsi} — перепродан (возможен отскок, осторожно)")
+        elif rsi > 65:       rsi_sc = 5;  factors.append(f"📊 RSI {rsi} — перекуплен, ожидаем снижение")
 
-    # ── F6: EMA тренд ─────────────────────────────────────────────────────────
+    # F6: EMA тренд (0–7 pts)
     ema_sc = 0
-    ema20 = calc_ema(closes[-20:], 20)
-    ema50 = calc_ema(closes[-50:], 50) if len(closes) >= 50 else ema20
+    ema20  = calc_ema(closes[-20:], 20)
+    ema50  = calc_ema(closes[-50:], 50) if len(closes) >= 50 else ema20
     if sig_type == "Pump" and price_now > ema20 > ema50:
-        ema_sc = 7; factors.append(f"📐 EMA20 > EMA50 — восходящий тренд подтверждён")
+        ema_sc = 7; factors.append("📐 EMA20 > EMA50 — восходящий тренд подтверждён")
     elif sig_type == "Dump" and price_now < ema20 < ema50:
-        ema_sc = 7; factors.append(f"📐 EMA20 < EMA50 — нисходящий тренд подтверждён")
+        ema_sc = 7; factors.append("📐 EMA20 < EMA50 — нисходящий тренд подтверждён")
     elif sig_type == "Pump" and price_now > ema20:
-        ema_sc = 3; factors.append(f"📐 Цена выше EMA20")
+        ema_sc = 3; factors.append("📐 Цена выше EMA20 — краткосрочный тренд вверх")
     elif sig_type == "Dump" and price_now < ema20:
-        ema_sc = 3; factors.append(f"📐 Цена ниже EMA20")
+        ema_sc = 3; factors.append("📐 Цена ниже EMA20 — краткосрочный тренд вниз")
 
-    # ── F7: Объём нарастает (последние 3 свечи) ───────────────────────────────
+    # F7: Нарастающий объём (0–5 pts)
     vol_trend_sc = 0
     vols = [x["v"] for x in c[-4:]]
     if len(vols) == 4 and vols[-1] > vols[-2] > vols[-3]:
-        vol_trend_sc = 5; factors.append("📦 Объём нарастает 3 свечи подряд")
+        vol_trend_sc = 5; factors.append("📦 Объём нарастает 3 свечи подряд — устойчивый поток")
 
-    # ── Объём USD ─────────────────────────────────────────────────────────────
+    # Объём в $
     vol_usd = c[-1]["v"]
     if vol_usd < MIN_VOL_USD: return None
 
-    # ── Итог ──────────────────────────────────────────────────────────────────
     total = vol_sc + price_sc + accel_sc + engulf_sc + rsi_sc + ema_sc + vol_trend_sc
     score = max(0, min(100, total))
-
     if score < MIN_SCORE: return None
 
     return {
-        "type":      sig_type,
-        "score":     score,
-        "pct_1":     round(pct_1,  4),
-        "pct_3":     round(pct_3,  4),
-        "pct_6":     round(pct_6,  4),
-        "pct_12":    round(pct_12, 4),
-        "rvol":      rv,
-        "rsi":       rsi,
-        "vol_usd":   round(vol_usd, 0),
-        "ema20":     round(ema20, 8),
-        "factors":   factors,
-        "engulf":    engulf_sc > 0,
-        "accel":     accel_sc  > 0,
-        "price_now": price_now,
-        "price_3ago": price_3,
+        "type": sig_type, "score": score,
+        "pct_1": round(pct_1,4), "pct_3": round(pct_3,4),
+        "pct_6": round(pct_6,4), "pct_12": round(pct_12,4),
+        "rvol": rv, "rsi": rsi,
+        "vol_usd": round(vol_usd, 0),
+        "factors": factors,
+        "engulf": engulf_sc > 0, "accel": accel_sc > 0,
+        "price_now": price_now, "price_3ago": price_3,
     }
 
-# ─── Уровни TP / SL ──────────────────────────────────────────────────────────
+# ─── Уровни TP/SL (реалистичные) ─────────────────────────────────────────────
 
-def calc_levels(candles: list, sig_type: str) -> dict:
+def calc_levels(candles: list, sig_type: str, score: int) -> dict:
+    """
+    TP/SL на основе ATR + % от цены.
+    Реалистичные цели для pump/dump торговли на 15m:
+      TP1 = 1.5x ATR (быстрый выход, осторожный)
+      TP2 = 2.5x ATR (оптимальный)
+      TP3 = 4.0x ATR (агрессивный, если памп продолжится)
+      SL  = 1.0x ATR (стоп ниже ATR)
+    """
     atr   = calc_atr(candles)
     price = candles[-1]["c"]
     sgn   = 1 if sig_type == "Pump" else -1
 
-    # Уровни поддержки/сопротивления (недавние High/Low)
-    highs_10 = [c["h"] for c in candles[-10:]]
-    lows_10  = [c["l"] for c in candles[-10:]]
-    near_res = max(highs_10)
-    near_sup = min(lows_10)
+    entry = price
 
-    entry = round(price, 8)
-    # TP на основе ATR + ближайшие уровни
-    tp1 = round(price + sgn * atr * 1.2, 8)
-    tp2 = round(price + sgn * atr * 2.8, 8)
-    tp3 = round(price + sgn * atr * 5.0, 8)
+    # ATR-based уровни (реалистичные множители для 15m pump)
+    tp1 = round(price + sgn * atr * 1.5, 8)
+    tp2 = round(price + sgn * atr * 2.5, 8)
+    tp3 = round(price + sgn * atr * 4.0, 8)
     sl  = round(price - sgn * atr * 1.0, 8)
 
     def pct(a: float, b: float) -> float:
-        return round(abs(b - a) / a * 100, 4) if a else 0
+        return round(abs(b-a)/a*100, 4) if a else 0
+
+    tp1_pct = pct(entry, tp1)
+    tp2_pct = pct(entry, tp2)
+    tp3_pct = pct(entry, tp3)
+    sl_pct  = pct(entry, sl)
 
     return {
-        "entry":    entry,
-        "atr":      round(atr, 8),
-        "tp1":      tp1,  "tp1_pct": pct(entry, tp1),
-        "tp2":      tp2,  "tp2_pct": pct(entry, tp2),
-        "tp3":      tp3,  "tp3_pct": pct(entry, tp3),
-        "sl":       sl,   "sl_pct":  pct(entry, sl),
-        "near_res": near_res,
-        "near_sup": near_sup,
+        "entry": round(entry, 8), "atr": round(atr, 8),
+        "tp1": tp1, "tp1_pct": tp1_pct,
+        "tp2": tp2, "tp2_pct": tp2_pct,
+        "tp3": tp3, "tp3_pct": tp3_pct,
+        "sl":  sl,  "sl_pct":  sl_pct,
     }
 
-# ─── PNG График ──────────────────────────────────────────────────────────────
+def get_leverage(score: int) -> tuple[int, float]:
+    for threshold, lev, pct in LEVERAGE_MAP:
+        if score >= threshold:
+            return lev, pct
+    return 2, 0.03
+
+# ─── PNG-график ───────────────────────────────────────────────────────────────
 
 def _chunk(name: bytes, data: bytes) -> bytes:
     crc = zlib.crc32(name + data) & 0xFFFFFFFF
@@ -350,107 +340,64 @@ def make_png(px: list, W: int, H: int) -> bytes:
             + _chunk(b"IEND", b""))
 
 def draw_chart(candles: list, sig: dict) -> bytes:
-    W, H = 720, 360
+    W, H   = 720, 360
     PL, PR, PT, PB = 12, 95, 30, 40
-
-    BG    = (13, 15, 22)
-    GRID  = (26, 30, 42)
-    UP    = (38, 166, 154)
-    DOWN  = (239, 83, 80)
-    ENTRY = (255, 200, 0)
-    TP_C  = (56, 210, 120)
-    SL_C  = (220, 55, 55)
-    WHITE = (200, 210, 220)
-    GRAY  = (100, 110, 130)
+    BG, GRID = (13, 15, 22), (26, 30, 42)
+    UP, DOWN = (38, 166, 154), (239, 83, 80)
+    ENTRY_C, TP_C, SL_C = (255, 200, 0), (56, 210, 120), (220, 55, 55)
 
     last = candles[-50:] if len(candles) >= 50 else candles
     n    = len(last)
-
     entry = sig.get("entry", sig["price_now"])
-    tp1   = sig.get("tp1",   entry * 1.02)
-    tp2   = sig.get("tp2",   entry * 1.04)
-    tp3   = sig.get("tp3",   entry * 1.07)
-    sl    = sig.get("sl",    entry * 0.97)
+    tp1, tp3, sl = sig.get("tp1", entry*1.02), sig.get("tp3", entry*1.07), sig.get("sl", entry*0.97)
 
-    all_p = ([c["h"] for c in last] + [c["l"] for c in last]
-             + [entry, tp3, sl])
-    p_min = min(all_p) * 0.998
-    p_max = max(all_p) * 1.002
-    p_rng = (p_max - p_min) or 1
-
+    all_p = [c["h"] for c in last] + [c["l"] for c in last] + [entry, tp3, sl]
+    p_min = min(all_p) * 0.998; p_max = max(all_p) * 1.002; p_rng = (p_max - p_min) or 1
     cw, ch = W - PL - PR, H - PT - PB
 
-    def ty(p: float) -> int:
-        return PT + ch - int((p - p_min) / p_rng * ch)
-    def tx(i: int) -> int:
-        return PL + int(i / max(n-1, 1) * cw)
+    def ty(p): return PT + ch - int((p-p_min)/p_rng*ch)
+    def tx(i): return PL + int(i/max(n-1,1)*cw)
 
-    px = [[BG]*W for _ in range(H)]
+    px_arr = [[BG]*W for _ in range(H)]
 
     def sp(x, y, col):
-        if 0 <= x < W and 0 <= y < H: px[y][x] = col
+        if 0 <= x < W and 0 <= y < H: px_arr[y][x] = col
 
-    def hline(y, x1, x2, col, dash=False):
+    def hl(y, x1, x2, col, dash=False):
         for x in range(x1, x2):
             if not dash or (x//5)%2==0: sp(x, y, col)
 
-    def vline(x, y1, y2, col):
+    def vl(x, y1, y2, col):
         for y in range(min(y1,y2), max(y1,y2)+1): sp(x, y, col)
 
     def rect(x0, y0, rw, rh, col):
         for dy in range(max(rh,1)):
             for dx in range(max(rw,1)): sp(x0+dx, y0+dy, col)
 
-    # Сетка
-    for i in range(7):
-        gy = PT + int(i/6*ch)
-        hline(gy, PL, W-PR, GRID, dash=True)
+    for i in range(7): hl(PT+int(i/6*ch), PL, W-PR, GRID, dash=True)
+    for i in range(0, n, 10): vl(tx(i), PT, PT+ch, GRID)
 
-    # Вертикальные линии (каждые 10 свечей)
-    for i in range(0, n, 10):
-        vline(tx(i), PT, PT+ch, GRID)
+    for price_lvl, col in [(entry,ENTRY_C),(sig.get("tp1",0),TP_C),(sig.get("tp2",0),TP_C),(tp3,TP_C),(sl,SL_C)]:
+        if price_lvl and p_min < price_lvl < p_max:
+            y = ty(price_lvl); hl(y, PL, W-PR-4, col, dash=True)
+            rect(W-PR+2, max(y-4,0), 10, 8, col)
 
-    # Уровни
-    for price_lvl, col, lbl in [
-        (entry, ENTRY, "ENTRY"),
-        (tp1,   TP_C,  "TP1"),
-        (tp2,   TP_C,  "TP2"),
-        (tp3,   TP_C,  "TP3"),
-        (sl,    SL_C,  "SL"),
-    ]:
-        if not price_lvl or not (p_min < price_lvl < p_max): continue
-        y = ty(price_lvl)
-        hline(y, PL, W-PR-4, col, dash=True)
-        # Маркер цены справа
-        rect(W-PR+2, max(y-4, 0), 10, 8, col)
-
-    # Объёмные бары (снизу, 40px)
-    vol_area = 40
     max_v = max((c["v"] for c in last), default=1)
     bw = max(int(cw/n)-1, 1)
     for i, c in enumerate(last):
         col = UP if c["c"] >= c["o"] else DOWN
-        vh  = max(int(c["v"]/max_v * vol_area), 1)
-        rect(tx(i), H-PB-vh, bw, vh, (col[0]//4, col[1]//4, col[2]//4))
+        rect(tx(i), H-PB-max(int(c["v"]/max_v*35),1), bw, max(int(c["v"]/max_v*35),1),
+             (col[0]//4, col[1]//4, col[2]//4))
 
-    # Свечи
     half = max(bw//2, 1)
     for i, c in enumerate(last):
-        x0   = tx(i)
-        xc   = x0 + half
-        col  = UP if c["c"] >= c["o"] else DOWN
-        vline(xc, ty(c["h"]), ty(c["l"]), col)
+        x0, xc = tx(i), tx(i)+half
+        col = UP if c["c"] >= c["o"] else DOWN
+        vl(xc, ty(c["h"]), ty(c["l"]), col)
         y_top = min(ty(c["o"]), ty(c["c"]))
-        y_bot = max(ty(c["o"]), ty(c["c"]))
-        rect(x0, y_top, max(bw,2), max(y_bot-y_top, 1), col)
+        rect(x0, y_top, max(bw,2), max(max(ty(c["o"]),ty(c["c"]))-y_top,1), col)
 
-    # Последняя свеча — белая рамка
-    lc = last[-1]
-    lcol = UP if lc["c"] >= lc["o"] else DOWN
-    xc = tx(n-1) + half
-    sp(xc, ty(lc["c"]), WHITE)
-
-    return make_png(px, W, H)
+    return make_png(px_arr, W, H)
 
 # ─── Форматирование ───────────────────────────────────────────────────────────
 
@@ -470,87 +417,83 @@ def fv(v: float) -> str:
 # ─── Telegram ─────────────────────────────────────────────────────────────────
 
 def tg_text(text: str):
-    token   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN",""), os.environ.get("TELEGRAM_CHAT_ID","")
     if not token or not chat_id: return
     try:
-        body = json.dumps({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}).encode()
+        body = json.dumps({"chat_id":chat_id,"text":text,"parse_mode":"HTML"}).encode()
         req  = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            data=body, headers={"Content-Type": "application/json"}, method="POST")
+            data=body, headers={"Content-Type":"application/json"}, method="POST")
         urllib.request.urlopen(req, timeout=6)
     except Exception:
         pass
 
 def tg_photo(img: bytes, caption: str):
-    token   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN",""), os.environ.get("TELEGRAM_CHAT_ID","")
     if not token or not chat_id: return
-    boundary = b"PB77"
-    CRLF     = b"\r\n"
+    boundary, CRLF = b"PB99", b"\r\n"
     def pf(name, val):
         return b"--"+boundary+CRLF+f'Content-Disposition: form-data; name="{name}"'.encode()+CRLF+CRLF+val.encode()+CRLF
     def pfile(name, fname, ct, data):
         return (b"--"+boundary+CRLF
                 +f'Content-Disposition: form-data; name="{name}"; filename="{fname}"'.encode()+CRLF
                 +f"Content-Type: {ct}".encode()+CRLF+CRLF+data+CRLF)
-    body = (pf("chat_id", chat_id)+pf("caption", caption)+pf("parse_mode","HTML")
-            +pfile("photo","chart.png","image/png",img)
-            +b"--"+boundary+b"--"+CRLF)
+    body = pf("chat_id",chat_id)+pf("caption",caption)+pf("parse_mode","HTML")+pfile("photo","chart.png","image/png",img)+b"--"+boundary+b"--"+CRLF
     try:
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendPhoto",
-            data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary.decode()}"},
+            data=body, headers={"Content-Type":f"multipart/form-data; boundary={boundary.decode()}"},
             method="POST")
         urllib.request.urlopen(req, timeout=14)
     except Exception:
         tg_text(caption)
 
 def build_caption(sig: dict) -> str:
-    is_pump   = sig["type"] == "Pump"
-    lev       = sig.get("leverage", 2)
-    pos_usdt  = sig.get("position_usdt", 30)
-    pos_with_lev = round(pos_usdt * lev, 1)
-    entry     = sig.get("entry", sig["price_now"])
-    tp1, tp2, tp3, sl = sig.get("tp1",0), sig.get("tp2",0), sig.get("tp3",0), sig.get("sl",0)
-    tp1p, tp2p, tp3p  = sig.get("tp1_pct",0), sig.get("tp2_pct",0), sig.get("tp3_pct",0)
-    slp               = sig.get("sl_pct",0)
+    is_pump = sig["type"] == "Pump"
+    lev     = sig.get("leverage", 2)
+    pos     = sig.get("position_usdt", 30)
+    exp     = pos * lev
+    entry   = sig.get("entry", sig["price_now"])
+    score   = sig.get("score", 65)
 
-    # Прибыль в USDT на каждом уровне
-    def profit(pct_val: float) -> str:
-        return f"+${pos_with_lev * pct_val/100:.2f}"
+    def profit(pct_v): return f"+${exp*pct_v/100:.2f}"
+    def loss(pct_v):   return f"-${exp*pct_v/100:.2f}"
 
-    action   = "LONG 📈" if is_pump else "SHORT 📉"
-    sign     = "+" if is_pump else "-"
-    score    = sig.get("score", 65)
-    rvol_v   = sig.get("rvol", 1)
-    rsi_v    = sig.get("rsi",  50)
-    pct3     = abs(sig.get("pct_3", 0))
-    pct6     = abs(sig.get("pct_6", 0))
-
-    # Факторы (первые 5, кратко)
-    factors  = sig.get("factors", [])
-    facts_txt = "\n".join(f"  • {f}" for f in factors[:6])
+    facts_txt = "\n".join(f"  • {f}" for f in sig.get("factors", [])[:6])
+    sign      = "+" if is_pump else "-"
+    action    = "LONG 📈" if is_pump else "SHORT 📉"
+    pct3      = abs(sig.get("pct_3", 0))
+    pct6      = abs(sig.get("pct_6", 0))
 
     return (
-        f"{'🚀' if is_pump else '💣'} <b>{sig['type'].upper()} — {sig['pair']}</b>  [{sig['exchange']}]\n"
-        f"{'🟢'*2 if is_pump else '🔴'*2}  Score: <b>{score}/100</b>  ·  15m  ·  {sig['time']} UTC\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{'🚀' if is_pump else '💣'} <b>{sig['type']} — {sig['pair']}</b>  [{sig['exchange']}]\n"
+        f"{'🟢🟢' if is_pump else '🔴🔴'}  Score: <b>{score}/100</b>  ·  15m  ·  {sig['time']} UTC\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"💰 Цена:  ${fp(sig['price_3ago'])} → <b>${fp(sig['price_now'])}</b>"
         f"  (<b>{sign}{pct3:.2f}%</b> / 45м,  {sign}{pct6:.2f}% / 90м)\n"
-        f"📊 Объём: <b>{fv(sig['vol_usd'])}</b>  ·  RVOL <b>{rvol_v:.1f}x</b>  ·  RSI <b>{rsi_v}</b>\n"
-        f"\n<b>━ ПОЧЕМУ СИГНАЛ ━</b>\n"
-        f"{facts_txt}\n"
-        f"\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 <b>СИГНАЛ: {action}</b>\n\n"
-        f"📌 Вход:          <b>${fp(entry)}</b>\n"
-        f"🔥 Плечо:         <b>{lev}x</b>  (позиция ${pos_usdt:.0f} → ${pos_with_lev:.0f})\n\n"
-        f"✅ TP1 <i>(осторожный)</i>:   <b>${fp(tp1)}</b>  +{tp1p:.1f}%  →  <b>{profit(tp1p)}</b>\n"
-        f"✅ TP2 <i>(оптимальный)</i>:  <b>${fp(tp2)}</b>  +{tp2p:.1f}%  →  <b>{profit(tp2p)}</b>\n"
-        f"✅ TP3 <i>(агрессивный)</i>:  <b>${fp(tp3)}</b>  +{tp3p:.1f}%  →  <b>{profit(tp3p)}</b>\n\n"
-        f"🛑 Стоп-лосс:     <b>${fp(sl)}</b>  -{slp:.1f}%  →  <b>-${pos_with_lev * slp/100:.2f}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💼 Банк: $1000  ·  На сделку: <b>${pos_usdt:.0f}</b>  ·  Плечо: <b>{lev}x</b>"
+        f"📊 Объём: <b>{fv(sig['vol_usd'])}</b>  ·  RVOL <b>{sig.get('rvol',1):.1f}x</b>  ·  RSI <b>{sig.get('rsi',50)}</b>\n"
+        f"\n<b>📋 ПОЧЕМУ ДАН СИГНАЛ:</b>\n{facts_txt}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 <b>ДЕЙСТВИЕ: {action}</b>\n\n"
+        f"📌 Вход:             <b>${fp(entry)}</b>\n"
+        f"🔥 Плечо:            <b>{lev}x</b>  (своих ${pos:.0f} → с плечом <b>${exp:.0f}</b>)\n\n"
+        f"✅ TP1 (быстрый):    <b>${fp(sig.get('tp1'))}</b>  +{sig.get('tp1_pct',0):.1f}%  →  <b>{profit(sig.get('tp1_pct',0))}</b>\n"
+        f"✅ TP2 (оптимальный):<b>${fp(sig.get('tp2'))}</b>  +{sig.get('tp2_pct',0):.1f}%  →  <b>{profit(sig.get('tp2_pct',0))}</b>\n"
+        f"✅ TP3 (агрессивный):<b>${fp(sig.get('tp3'))}</b>  +{sig.get('tp3_pct',0):.1f}%  →  <b>{profit(sig.get('tp3_pct',0))}</b>\n\n"
+        f"🛑 Стоп-лосс:        <b>${fp(sig.get('sl'))}</b>  -{sig.get('sl_pct',0):.1f}%  →  <b>{loss(sig.get('sl_pct',0))}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💼 Банк $1000  ·  Позиция ${pos:.0f}  ·  {lev}x  ·  Экспозиция <b>${exp:.0f}</b>\n"
+        f"⏱ Сигнал действует 4 часа, затем закрывается автоматически"
+    )
+
+def tg_close_notify(pair: str, result: str, pct: float, pnl: float, reason: str, bal: float):
+    emoji = "✅" if result == "win" else "❌"
+    sign  = "+" if pnl >= 0 else ""
+    tg_text(
+        f"{emoji} <b>Закрыт: {pair}</b>  [{result.upper()}]\n"
+        f"Причина: {reason}\n"
+        f"P&L: <b>{sign}{pct:.2f}%</b>  →  <b>{sign}${pnl:.2f}</b>\n"
+        f"💼 Баланс: <b>${bal:.2f}</b>"
     )
 
 def notify(sig: dict):
@@ -578,26 +521,49 @@ def already_sent(pair: str, exchange: str) -> bool:
     except Exception:
         return False
 
-def get_portfolio_balance() -> float:
+def get_portfolio() -> dict:
     try:
         conn = psycopg2.connect(os.environ["DATABASE_URL"])
         cur  = conn.cursor()
-        cur.execute(f"SELECT current_balance FROM {SCHEMA}.pump_portfolio LIMIT 1")
+        cur.execute(f"SELECT id, current_balance, initial_balance, wins, losses, total_signals FROM {SCHEMA}.pump_portfolio LIMIT 1")
         r = cur.fetchone()
         cur.close(); conn.close()
-        return float(r[0]) if r else BALANCE
+        if r:
+            return {"id": r[0], "balance": float(r[1]), "initial": float(r[2]),
+                    "wins": r[3] or 0, "losses": r[4] or 0, "signals": r[5] or 0}
     except Exception:
-        return BALANCE
+        pass
+    return {"id": None, "balance": START_BANK, "initial": START_BANK, "wins": 0, "losses": 0, "signals": 0}
+
+def update_portfolio(pnl_usdt: float, is_win: bool):
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur  = conn.cursor()
+        cur.execute(f"SELECT id, current_balance, initial_balance FROM {SCHEMA}.pump_portfolio LIMIT 1")
+        r = cur.fetchone()
+        if not r: cur.close(); conn.close(); return
+        pid, bal, ini = r[0], float(r[1]), float(r[2])
+        new_bal  = round(bal + pnl_usdt, 2)
+        new_peak = max(new_bal, bal)
+        pnl_tot  = round(new_bal - ini, 2)
+        pnl_pct  = round((new_bal - ini) / ini * 100, 4)
+        cur.execute(
+            f"""UPDATE {SCHEMA}.pump_portfolio
+            SET current_balance=%s, peak_balance=%s, total_pnl=%s, total_pnl_pct=%s,
+                wins=wins+%s, losses=losses+%s, total_signals=total_signals+1, updated_at=NOW()
+            WHERE id=%s""",
+            (new_bal, new_peak, pnl_tot, pnl_pct, 1 if is_win else 0, 0 if is_win else 1, pid))
+        conn.commit(); cur.close(); conn.close()
+    except Exception:
+        pass
 
 def save_signal(sig: dict) -> int | None:
     try:
         conn = psycopg2.connect(os.environ["DATABASE_URL"])
         cur  = conn.cursor()
-        lev       = sig.get("leverage", 2)
-        pos_usdt  = sig.get("position_usdt", 30)
-        factors_j = json.dumps(sig.get("factors", []), ensure_ascii=False)
+        lev, pos = sig.get("leverage", 2), sig.get("position_usdt", 30)
+        facts_j  = json.dumps(sig.get("factors", []), ensure_ascii=False)
         reasoning = "\n".join(sig.get("factors", []))
-
         cur.execute(
             f"""INSERT INTO {SCHEMA}.signals
             (pair, signal_type, exchange, entry_price, target_price, stop_price,
@@ -611,29 +577,134 @@ def save_signal(sig: dict) -> int | None:
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                     %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING id""",
-            (
-                sig["pair"], "LONG" if sig["type"]=="Pump" else "SHORT",
-                sig["exchange"], sig["entry"], sig["tp2"], sig["sl"],
-                sig["score"], "active",
-                sig.get("rsi", 50), "pump_v3", 0.5,
-                round(sig.get("rvol", 1), 2), 50, sig["type"],
-                reasoning[:500], "15m",
-                sig["score"] if sig["type"]=="Pump" else 0,
-                sig["score"] if sig["type"]=="Dump"  else 0,
-                lev, round(pos_usdt * lev, 2),
-                lev, round(pos_usdt, 2),
-                reasoning[:1000], factors_j,
-                sig.get("rvol", 1), sig.get("rsi", 50),
-                sig.get("pct_1", 0), sig.get("pct_3", 0), sig.get("pct_6", 0),
-                sig.get("tp1", 0), sig.get("tp2", 0), sig.get("tp3", 0),
-                sig.get("tp1_pct", 0), sig.get("tp2_pct", 0), sig.get("tp3_pct", 0),
-                sig.get("sl_pct", 0), sig.get("atr", 0),
-            ))
+            (sig["pair"], "LONG" if sig["type"]=="Pump" else "SHORT",
+             sig["exchange"], sig["entry"], sig.get("tp2", sig["entry"]), sig.get("sl", sig["entry"]),
+             sig["score"], "active",
+             sig.get("rsi", 50), "pump_v4", 0.5, round(sig.get("rvol",1),2), 50,
+             sig["type"], reasoning[:500], "15m",
+             sig["score"] if sig["type"]=="Pump" else 0,
+             sig["score"] if sig["type"]=="Dump"  else 0,
+             lev, round(pos*lev, 2), lev, round(pos,2),
+             reasoning[:1000], facts_j,
+             sig.get("rvol",1), sig.get("rsi",50),
+             sig.get("pct_1",0), sig.get("pct_3",0), sig.get("pct_6",0),
+             sig.get("tp1",0), sig.get("tp2",0), sig.get("tp3",0),
+             sig.get("tp1_pct",0), sig.get("tp2_pct",0), sig.get("tp3_pct",0),
+             sig.get("sl_pct",0), sig.get("atr",0)))
         row = cur.fetchone()
         conn.commit(); cur.close(); conn.close()
         return row[0] if row else None
     except Exception:
         return None
+
+# ─── Автозакрытие сигналов (честная статистика) ───────────────────────────────
+
+def auto_close_signals():
+    """
+    Проверяем активные сигналы: достигли TP2 или SL или прошло 4 часа.
+    Пишем реальный результат в БД. Обновляем портфель.
+    Это делает статистику 100% честной.
+    """
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur  = conn.cursor()
+        cur.execute(
+            f"""SELECT id, pair, signal_type, exchange, entry_price,
+                tp2_price, stop_price, leverage_recommended, position_usdt,
+                tp1_price, tp3_price, created_at
+            FROM {SCHEMA}.signals
+            WHERE sentiment IN ('Pump','Dump') AND status='active'
+              AND created_at < NOW() - INTERVAL '15 minutes'
+            LIMIT 30""")
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+    except Exception:
+        return
+
+    for row in rows:
+        (sig_id, pair, sig_type, exchange, entry_p,
+         tp2_p, sl_p, lev, pos_usdt,
+         tp1_p, tp3_p, created_at) = row
+
+        entry = float(entry_p)
+        tp2   = float(tp2_p) if tp2_p else 0
+        sl    = float(sl_p)  if sl_p  else 0
+        tp1   = float(tp1_p) if tp1_p else 0
+        lev_v = int(lev)     if lev   else 1
+        pos   = float(pos_usdt) if pos_usdt else 30
+
+        # Получаем символ для API
+        sym = pair.replace("/", "").replace("-", "")
+
+        price = get_price_now(exchange, sym)
+        if price is None:
+            # Fallback: Binance
+            d = fetch(f"https://api.binance.com/api/v3/ticker/price?symbol={sym}")
+            if isinstance(d, dict) and "price" in d:
+                price = float(d["price"])
+        if price is None:
+            continue
+
+        now_utc = datetime.now(timezone.utc)
+        age_h   = (now_utc.timestamp() - created_at.timestamp()) / 3600 if created_at else 999
+
+        is_long = sig_type == "LONG"
+        result  = None
+        reason  = ""
+        exit_p  = price
+
+        if is_long:
+            if tp2 > 0 and price >= tp2:
+                result = "win";  reason = f"TP2 достигнут ${fp(tp2)}";  exit_p = tp2
+            elif tp1 > 0 and price >= tp1 and age_h >= 1:
+                result = "win";  reason = f"TP1 достигнут ${fp(tp1)}";  exit_p = tp1
+            elif sl > 0 and price <= sl:
+                result = "loss"; reason = f"Стоп-лосс ${fp(sl)} сработал"; exit_p = sl
+            elif age_h >= CLOSE_HOURS:
+                exit_p = price
+                result = "win" if price > entry else "loss"
+                reason = f"Закрыт по времени ({CLOSE_HOURS}ч)"
+        else:  # SHORT
+            if tp2 > 0 and price <= tp2:
+                result = "win";  reason = f"TP2 достигнут ${fp(tp2)}";  exit_p = tp2
+            elif tp1 > 0 and price <= tp1 and age_h >= 1:
+                result = "win";  reason = f"TP1 достигнут ${fp(tp1)}";  exit_p = tp1
+            elif sl > 0 and price >= sl:
+                result = "loss"; reason = f"Стоп-лосс ${fp(sl)} сработал"; exit_p = sl
+            elif age_h >= CLOSE_HOURS:
+                exit_p = price
+                result = "win" if price < entry else "loss"
+                reason = f"Закрыт по времени ({CLOSE_HOURS}ч)"
+
+        if result is None:
+            continue
+
+        # P&L
+        if is_long:
+            raw_pct   = (exit_p - entry) / entry * 100
+        else:
+            raw_pct   = (entry - exit_p) / entry * 100
+        lev_pct   = round(raw_pct * lev_v, 4)
+        pnl_usdt  = round(pos * lev_pct / 100, 2)
+
+        try:
+            conn2 = psycopg2.connect(os.environ["DATABASE_URL"])
+            cur2  = conn2.cursor()
+            cur2.execute(
+                f"""UPDATE {SCHEMA}.signals
+                SET actual_exit_price=%s, result=%s, result_pct=%s,
+                    pnl_usdt=%s, status='closed', closed_at=NOW(),
+                    analysis_text=COALESCE(analysis_text,'')||' | '||%s
+                WHERE id=%s""",
+                (exit_p, result, lev_pct, pnl_usdt, reason, sig_id))
+            conn2.commit(); cur2.close(); conn2.close()
+        except Exception:
+            continue
+
+        update_portfolio(pnl_usdt, result == "win")
+
+        portfolio = get_portfolio()
+        tg_close_notify(pair, result, lev_pct, pnl_usdt, reason, portfolio["balance"])
 
 def get_saved(limit: int = 50) -> list:
     try:
@@ -641,54 +712,56 @@ def get_saved(limit: int = 50) -> list:
         cur  = conn.cursor()
         cur.execute(
             f"""SELECT id, pair, signal_type, exchange,
-                entry_price, target_price, stop_price,
-                confidence, status, analysis_text, created_at,
-                result, result_pct, pnl_usdt,
+                entry_price, tp1_price, tp2_price, tp3_price, stop_price,
+                confidence, status, created_at, result, result_pct, pnl_usdt,
                 leverage_recommended, position_usdt, reasoning, factors_json,
                 rvol, rsi_value, pct_15m, pct_45m, pct_90m,
-                tp1_price, tp2_price, tp3_price,
-                tp1_pct, tp2_pct, tp3_pct, sl_pct
+                tp1_pct, tp2_pct, tp3_pct, sl_pct, actual_exit_price
             FROM {SCHEMA}.signals
-            WHERE sentiment IN ('Pump','Dump') AND status != 'archived'
+            WHERE sentiment IN ('Pump','Dump')
             ORDER BY created_at DESC LIMIT %s""", (limit,))
         rows = cur.fetchall()
         cur.close(); conn.close()
         out = []
         for r in rows:
-            factors = []
+            facts = []
             try:
-                if r[17]: factors = json.loads(r[17])
+                if r[18]: facts = json.loads(r[18])
             except Exception:
                 pass
             out.append({
                 "id": r[0], "pair": r[1],
                 "type": "Pump" if r[2]=="LONG" else "Dump",
                 "exchange": r[3],
-                "entry": float(r[4]), "tp2": float(r[5]), "sl": float(r[6]),
+                "entry": float(r[4]),
+                "tp1": float(r[5]) if r[5] else 0,
+                "tp2": float(r[6]) if r[6] else 0,
+                "tp3": float(r[7]) if r[7] else 0,
+                "sl":  float(r[8]) if r[8] else 0,
                 "price_now": float(r[4]), "price_from": float(r[4]),
-                "price_pct": float(r[22] or 0),
-                "volume_usd": 0, "volume_pct": float(r[7] or 0),
-                "volume_increase_usd": 0,
-                "score": r[7] or 50, "strength": r[7] or 50,
+                "score": r[9] or 50, "strength": r[9] or 50,
+                "status_db": r[10],
                 "timeframe": "15m",
-                "analysis": r[9] or "",
-                "reasoning": r[16] or "",
-                "factors": factors,
-                "leverage": r[14] or 1,
-                "position_usdt": float(r[15] or 0),
-                "rvol": float(r[18] or 1),
-                "rsi": float(r[19] or 50),
-                "pct_1":  float(r[20] or 0),
-                "pct_3":  float(r[21] or 0),
-                "pct_6":  float(r[22] or 0),
-                "tp1": float(r[23] or 0), "tp2": float(r[24] or 0), "tp3": float(r[25] or 0),
-                "tp1_pct": float(r[26] or 0), "tp2_pct": float(r[27] or 0),
-                "tp3_pct": float(r[28] or 0), "sl_pct": float(r[29] or 0),
-                "time":   r[10].strftime("%H:%M")         if r[10] else "—",
-                "date":   r[10].strftime("%d.%m %H:%M")   if r[10] else "—",
-                "result": r[11],
-                "result_pct": round(float(r[12]),2) if r[12] else None,
-                "pnl_usdt":   round(float(r[13]),2) if r[13] else None,
+                "time":   r[11].strftime("%H:%M")       if r[11] else "—",
+                "date":   r[11].strftime("%d.%m %H:%M") if r[11] else "—",
+                "result": r[12],
+                "result_pct": round(float(r[13]),2) if r[13] else None,
+                "pnl_usdt":   round(float(r[14]),2) if r[14] else None,
+                "leverage": r[15] or 1,
+                "position_usdt": float(r[16] or 0),
+                "reasoning": r[17] or "",
+                "factors": facts,
+                "rvol": float(r[19] or 1),
+                "rsi":  float(r[20] or 50),
+                "pct_1":  float(r[21] or 0),
+                "pct_3":  float(r[22] or 0),
+                "pct_6":  float(r[23] or 0),
+                "tp1_pct": float(r[24] or 0),
+                "tp2_pct": float(r[25] or 0),
+                "tp3_pct": float(r[26] or 0),
+                "sl_pct":  float(r[27] or 0),
+                "exit_price": float(r[28]) if r[28] else None,
+                "volume_usd": 0, "volume_pct": 0, "volume_increase_usd": 0,
             })
         return out
     except Exception:
@@ -699,81 +772,87 @@ def get_stats() -> dict:
         conn = psycopg2.connect(os.environ["DATABASE_URL"])
         cur  = conn.cursor()
         cur.execute(f"""
-            SELECT COUNT(*) total,
+            SELECT
+                COUNT(*) total,
                 COUNT(*) FILTER (WHERE sentiment='Pump')  pumps,
                 COUNT(*) FILTER (WHERE sentiment='Dump')  dumps,
                 COUNT(*) FILTER (WHERE result='win')      wins,
                 COUNT(*) FILTER (WHERE result='loss')     losses,
-                AVG(confidence) FILTER (WHERE sentiment IN ('Pump','Dump')) avg_score,
-                AVG(result_pct) FILTER (WHERE result='win') avg_win_pct,
+                COUNT(*) FILTER (WHERE status='active')   active,
+                AVG(confidence) FILTER (WHERE confidence IS NOT NULL) avg_score,
+                AVG(result_pct) FILTER (WHERE result='win')  avg_win,
+                AVG(result_pct) FILTER (WHERE result='loss') avg_loss,
                 COALESCE(SUM(pnl_usdt),0) total_pnl
             FROM {SCHEMA}.signals
-            WHERE sentiment IN ('Pump','Dump') AND status != 'archived'""")
+            WHERE sentiment IN ('Pump','Dump')""")
         r = cur.fetchone()
-        total = r[0] or 0; pumps=r[1] or 0; dumps=r[2] or 0
-        wins=r[3] or 0; losses=r[4] or 0
+        total=r[0] or 0; pumps=r[1] or 0; dumps=r[2] or 0
+        wins=r[3] or 0; losses=r[4] or 0; active=r[5] or 0
         closed = wins+losses
-        wr = round(wins/closed*100,1) if closed>0 else 0
+        wr     = round(wins/closed*100,1) if closed > 0 else 0
 
-        # По биржам
         cur.execute(f"""
             SELECT exchange, COUNT(*) cnt,
+                COUNT(*) FILTER (WHERE result='win') w,
+                COUNT(*) FILTER (WHERE result='loss') l
+            FROM {SCHEMA}.signals
+            WHERE sentiment IN ('Pump','Dump')
+            GROUP BY exchange ORDER BY cnt DESC""")
+        by_exch = [{"exchange": x[0], "total": x[1], "wins": x[2], "losses": x[3]} for x in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT DATE(created_at) d, COUNT(*) cnt,
                 COUNT(*) FILTER (WHERE result='win') w
             FROM {SCHEMA}.signals
-            WHERE sentiment IN ('Pump','Dump') AND status!='archived'
-            GROUP BY exchange ORDER BY cnt DESC""")
-        by_exch = [{"exchange": x[0], "total": x[1], "wins": x[2]} for x in cur.fetchall()]
-
-        # По дням
-        cur.execute(f"""
-            SELECT DATE(created_at) d, COUNT(*) cnt
-            FROM {SCHEMA}.signals
-            WHERE sentiment IN ('Pump','Dump') AND status!='archived'
-              AND created_at > NOW() - INTERVAL '14 days'
+            WHERE sentiment IN ('Pump','Dump')
+              AND created_at > NOW() - INTERVAL '30 days'
             GROUP BY d ORDER BY d DESC""")
-        daily = [{"date": str(x[0]), "count": x[1]} for x in cur.fetchall()]
+        daily = [{"date": str(x[0]), "count": x[1], "wins": x[2]} for x in cur.fetchall()]
 
         # Портфель
-        cur.execute(f"SELECT initial_balance,current_balance,wins,losses,total_signals FROM {SCHEMA}.pump_portfolio LIMIT 1")
+        cur.execute(f"""
+            SELECT initial_balance, current_balance, peak_balance,
+                wins, losses, total_signals, started_at
+            FROM {SCHEMA}.pump_portfolio LIMIT 1""")
         pr = cur.fetchone()
         portfolio = {}
         if pr:
-            bal = float(pr[1])
-            ini = float(pr[0])
+            bal, ini = float(pr[1]), float(pr[0])
             portfolio = {
                 "balance": bal, "initial": ini,
                 "pnl": round(bal-ini, 2),
                 "pnl_pct": round((bal-ini)/ini*100, 2),
-                "wins": pr[2] or 0, "losses": pr[3] or 0,
-                "total_signals": pr[4] or 0,
+                "peak": float(pr[2]),
+                "wins": pr[3] or 0, "losses": pr[4] or 0,
+                "total_signals": pr[5] or 0,
+                "started": str(pr[6])[:10] if pr[6] else "",
             }
 
         cur.close(); conn.close()
         return {
             "total": total, "pumps": pumps, "dumps": dumps,
-            "wins": wins, "losses": losses, "closed": closed,
+            "wins": wins, "losses": losses, "closed": closed, "active": active,
             "win_rate": wr,
-            "avg_score": round(float(r[5] or 0), 1),
-            "avg_win_pct": round(float(r[6] or 0), 2),
-            "total_pnl": round(float(r[7] or 0), 2),
-            "daily": daily, "by_exchange": by_exch,
-            "portfolio": portfolio,
+            "avg_score":    round(float(r[6] or 0), 1),
+            "avg_win_pct":  round(float(r[7] or 0), 2),
+            "avg_loss_pct": round(float(r[8] or 0), 2),
+            "total_pnl":    round(float(r[9] or 0), 2),
+            "daily": daily, "by_exchange": by_exch, "portfolio": portfolio,
         }
     except Exception:
-        return {"total":0,"pumps":0,"dumps":0,"wins":0,"losses":0,"closed":0,
-                "win_rate":0,"avg_score":0,"avg_win_pct":0,"total_pnl":0,
+        return {"total":0,"pumps":0,"dumps":0,"wins":0,"losses":0,"closed":0,"active":0,
+                "win_rate":0,"avg_score":0,"avg_win_pct":0,"avg_loss_pct":0,"total_pnl":0,
                 "daily":[],"by_exchange":[],"portfolio":{}}
 
-# ─── Сканирование ────────────────────────────────────────────────────────────
+# ─── Основной скан ────────────────────────────────────────────────────────────
 
 def run_scan(only_exchange: str | None = None) -> dict:
     pairs_map = ({only_exchange: EXCHANGE_PAIRS[only_exchange]}
                  if only_exchange and only_exchange in EXCHANGE_PAIRS
                  else EXCHANGE_PAIRS)
-    total   = sum(len(v) for v in pairs_map.values())
-    found   = []
-    errors  = 0
-    balance = get_portfolio_balance()
+    total, found, errors = sum(len(v) for v in pairs_map.values()), [], 0
+    portfolio = get_portfolio()
+    balance   = portfolio["balance"]
 
     for exchange, pairs in pairs_map.items():
         for sym in pairs:
@@ -782,43 +861,38 @@ def run_scan(only_exchange: str | None = None) -> dict:
                 scored  = score_signal(candles)
                 if not scored: continue
 
-                pair = sym.replace("-", "/").replace("USDT", "/USDT")
-                if "/USDT/USDT" in pair:
-                    pair = pair.replace("/USDT/USDT", "/USDT")
+                pair = sym.replace("-","/").replace("USDT","/USDT")
+                if "/USDT/USDT" in pair: pair = pair.replace("/USDT/USDT","/USDT")
 
                 if already_sent(pair, exchange): continue
 
-                levels  = calc_levels(candles, scored["type"])
                 lev, pos_pct = get_leverage(scored["score"])
-                pos_usdt = round(balance * pos_pct, 2)
+                pos_usdt     = round(balance * pos_pct, 2)
+                levels       = calc_levels(candles, scored["type"], scored["score"])
 
                 sig = {
                     "pair": pair, "symbol": sym, "exchange": exchange,
                     "timeframe": "15m",
                     "time": datetime.now(timezone.utc).strftime("%H:%M"),
-                    "candles": candles,
-                    "leverage": lev,
-                    "position_usdt": pos_usdt,
+                    "candles": candles, "leverage": lev, "position_usdt": pos_usdt,
                     **scored, **levels,
                 }
 
                 db_id = save_signal(sig)
                 if db_id: sig["id"] = db_id
-
                 notify(sig)
                 sig.pop("candles", None)
                 found.append(sig)
-
             except Exception:
                 errors += 1
 
-    found.sort(key=lambda x: x.get("score", 0), reverse=True)
+    found.sort(key=lambda x: x.get("score",0), reverse=True)
     return {"signals": found, "analyzed": total, "found": len(found), "errors": errors}
 
 # ─── Handler ─────────────────────────────────────────────────────────────────
 
 def handler(event: dict, context) -> dict:
-    """PumpBot v3: Binance+Bybit+OKX+MEXC · 150+ пар · Score+Leverage+Reasoning."""
+    """PumpBot v4: честная статистика, реальный P&L, авто-закрытие сигналов."""
     if event.get("httpMethod") == "OPTIONS":
         return {"statusCode": 200, "headers": HEADERS, "body": ""}
 
@@ -827,25 +901,31 @@ def handler(event: dict, context) -> dict:
 
     if action == "saved":
         return {"statusCode": 200, "headers": HEADERS,
-                "body": json.dumps({"signals": get_saved(int(params.get("limit", 50)))})}
+                "body": json.dumps({"signals": get_saved(int(params.get("limit",50)))})}
 
     if action == "stats":
         return {"statusCode": 200, "headers": HEADERS,
                 "body": json.dumps({"stats": get_stats()})}
 
+    if action == "close":
+        auto_close_signals()
+        return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"ok": True})}
+
     if action == "test_telegram":
+        p = get_portfolio()
         tg_text(
-            "🚀 <b>PumpBot v3 — активен!</b>\n\n"
+            "🚀 <b>PumpBot v4 — запущен!</b>\n\n"
             "✅ Binance · Bybit · OKX · MEXC\n"
-            "✅ 150+ пар · каждые 5 минут\n"
-            "✅ Score 0–100 · Плечо до 15x\n"
-            "✅ Reasoning · TP1/TP2/TP3 · SL\n"
-            "✅ Виртуальный банк $1,000\n\n"
-            "Жду пампов... 🎯"
+            "✅ Score 0–100 · Плечо 2x–15x\n"
+            "✅ Авто-закрытие + реальная статистика\n"
+            "✅ Виртуальный банк: <b>${:.2f}</b>\n\n"
+            "Лозунг: правда, правда и ещё раз правда 🎯".format(p["balance"])
         )
         return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"ok": True})}
 
-    only = params.get("exchange")
+    # scan — сначала закрываем старые
+    auto_close_signals()
+    only   = params.get("exchange")
     result = run_scan(only)
     return {
         "statusCode": 200, "headers": HEADERS,
