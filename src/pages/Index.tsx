@@ -29,6 +29,15 @@ interface PumpSignal {
   analysis?: string;
   result?: string;
   result_pct?: number;
+  entry?: number;
+  tp1?: number;
+  tp2?: number;
+  tp3?: number;
+  sl?: number;
+  tp1_pct?: number;
+  tp2_pct?: number;
+  tp3_pct?: number;
+  sl_pct?: number;
 }
 
 interface MarketPair {
@@ -172,6 +181,59 @@ function PumpCard({ sig, idx }: { sig: PumpSignal; idx: number }) {
           </div>
         )}
 
+        {/* Entry / TP / SL block */}
+        {(sig.entry || sig.tp1 || sig.sl) && (
+          <div className="mt-1 rounded-lg overflow-hidden border border-border/50"
+            style={{ background: "hsl(220 13% 8%)" }}>
+            {/* Entry */}
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/30">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono" style={{ color: "hsl(43 96% 56%)" }}>📌</span>
+                <span className="text-xs font-mono font-semibold" style={{ color: "hsl(43 96% 56%)" }}>
+                  {isPump ? "ВХОД LONG" : "ВХОД SHORT"}
+                </span>
+              </div>
+              <span className="font-mono text-sm font-bold" style={{ color: "hsl(43 96% 56%)" }}>
+                ${fmtPrice(sig.entry || sig.price_now)}
+              </span>
+            </div>
+            {/* TP levels */}
+            {[
+              { label: "TP1 (осторожный)", val: sig.tp1, pct: sig.tp1_pct },
+              { label: "TP2 (оптимальный)", val: sig.tp2, pct: sig.tp2_pct },
+              { label: "TP3 (агрессивный)", val: sig.tp3, pct: sig.tp3_pct },
+            ].filter(t => t.val).map((t, i) => (
+              <div key={i} className="flex items-center justify-between px-3 py-1.5 border-b border-border/30">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs">✅</span>
+                  <span className="text-xs text-muted-foreground font-mono">{t.label}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs font-bold bull">${fmtPrice(t.val!)}</span>
+                  {t.pct !== undefined && (
+                    <span className="text-xs font-mono bull opacity-70">(+{t.pct.toFixed(1)}%)</span>
+                  )}
+                </div>
+              </div>
+            ))}
+            {/* SL */}
+            {sig.sl && (
+              <div className="flex items-center justify-between px-3 py-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs">🛑</span>
+                  <span className="text-xs text-muted-foreground font-mono">Стоп-лосс</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs font-bold bear">${fmtPrice(sig.sl)}</span>
+                  {sig.sl_pct !== undefined && (
+                    <span className="text-xs font-mono bear opacity-70">(-{sig.sl_pct.toFixed(1)}%)</span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Strength bar */}
         <div className="flex items-center gap-2 mt-1">
           <span className="text-xs text-muted-foreground font-mono shrink-0">Сила:</span>
@@ -192,11 +254,6 @@ function PumpCard({ sig, idx }: { sig: PumpSignal; idx: number }) {
             color: sig.strength >= 80 ? "hsl(158 64% 48%)" : sig.strength >= 65 ? "hsl(43 96% 56%)" : "hsl(25 95% 55%)"
           }}>{sig.strength}%</span>
         </div>
-
-        {/* Analysis tag */}
-        {sig.analysis && (
-          <div className="text-xs text-muted-foreground font-mono mt-0.5 opacity-70">{sig.analysis}</div>
-        )}
 
         {/* Result badge if closed */}
         {sig.result && (
