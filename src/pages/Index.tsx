@@ -2,8 +2,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Icon from "@/components/ui/icon";
 
-const API_SIGNALS = "https://functions.poehali.dev/4b074d99-4dd2-412c-904d-50db2bf5fbed";
-const API_MARKET  = "https://functions.poehali.dev/b4830b16-e61f-4ab5-8a8b-eb323709567c";
+const API_SIGNALS  = "https://functions.poehali.dev/4b074d99-4dd2-412c-904d-50db2bf5fbed";
+const API_MARKET   = "https://functions.poehali.dev/b4830b16-e61f-4ab5-8a8b-eb323709567c";
+const API_MEXC_BOT = "https://functions.poehali.dev/d798c17a-255c-4fb0-869f-37ff1213fbbe";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -768,6 +769,253 @@ function TelegramSection() {
   );
 }
 
+// ─── MEXC Bot Section ─────────────────────────────────────────────────────────
+
+function BotSection() {
+  const [stats, setStats]       = useState<any>(null);
+  const [loading, setLoading]   = useState(true);
+  const [acting, setActing]     = useState(false);
+  const [log, setLog]           = useState<string[]>([]);
+
+  const addLog = (msg: string) => setLog(prev => [`[${new Date().toLocaleTimeString("ru")}] ${msg}`, ...prev.slice(0, 19)]);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API_MEXC_BOT}?action=stats`);
+      const d = await r.json();
+      setStats(d);
+    } catch { /* ignore */ }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleStart = async () => {
+    setActing(true);
+    addLog("Запускаю бот...");
+    try {
+      const r = await fetch(`${API_MEXC_BOT}?action=start`);
+      const d = await r.json();
+      if (d.ok) {
+        addLog(`✅ Бот запущен! Баланс MEXC: $${d.balance?.toFixed(2)}`);
+        await load();
+      } else {
+        addLog(`❌ Ошибка запуска: ${d.error || "неизвестно"}`);
+      }
+    } catch (e) { addLog("❌ Нет соединения с сервером"); }
+    setActing(false);
+  };
+
+  const handleStop = async () => {
+    setActing(true);
+    addLog("Останавливаю бот...");
+    try {
+      const r = await fetch(`${API_MEXC_BOT}?action=stop`);
+      const d = await r.json();
+      addLog(`🔴 Бот остановлен. Закрыто позиций: ${d.closed || 0}`);
+      await load();
+    } catch (e) { addLog("❌ Нет соединения с сервером"); }
+    setActing(false);
+  };
+
+  const isRunning  = stats?.running || false;
+  const openTrades = stats?.open_trades || [];
+  const history    = stats?.history || [];
+  const closed     = stats?.closed || 0;
+  const wr         = stats?.win_rate || 0;
+
+  return (
+    <div className="flex flex-col gap-4 fade-in">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold">MEXC Авто-Бот</span>
+        <button onClick={load} className="p-1 rounded border border-border text-muted-foreground hover:text-foreground transition-colors">
+          <Icon name="RefreshCw" size={11} className={loading ? "animate-spin" : ""} />
+        </button>
+      </div>
+
+      {/* Главная кнопка запуска */}
+      <div className="rounded-lg border p-5 flex flex-col gap-4"
+        style={{
+          background: isRunning
+            ? "linear-gradient(135deg, hsl(158 64% 48% / 0.12), hsl(220 13% 11%))"
+            : "linear-gradient(135deg, hsl(220 13% 13%), hsl(220 13% 11%))",
+          borderColor: isRunning ? "hsl(158 64% 48% / 0.4)" : "hsl(220 13% 20%)",
+        }}>
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <div className={`w-3 h-3 rounded-full ${isRunning ? "bg-bull blink" : "bg-muted-foreground"}`} />
+            <div>
+              <div className="font-semibold text-sm">
+                {isRunning ? "Бот работает 🟢" : "Бот остановлен 🔴"}
+              </div>
+              <div className="text-xs text-muted-foreground font-mono">
+                MEXC Futures · 10x · 15% депозита · до 3 позиций
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            {isRunning ? (
+              <button onClick={handleStop} disabled={acting}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-sm transition-all disabled:opacity-40"
+                style={{ background: "hsl(0 72% 51%)", color: "white" }}>
+                {acting
+                  ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  : <Icon name="Square" size={14} />}
+                Остановить
+              </button>
+            ) : (
+              <button onClick={handleStart} disabled={acting}
+                className="flex items-center gap-2 px-6 py-2.5 rounded-lg font-semibold text-sm transition-all disabled:opacity-40"
+                style={{ background: "hsl(158 64% 48%)", color: "hsl(220 13% 8%)" }}>
+                {acting
+                  ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                  : <Icon name="Play" size={14} />}
+                Запустить бот
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Параметры бота */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {[
+            { label: "Биржа",    val: "MEXC Futures" },
+            { label: "Плечо",    val: "10x" },
+            { label: "На сделку",val: "15% депозита" },
+            { label: "Таймаут",  val: "4 часа" },
+          ].map((m, i) => (
+            <div key={i} className="rounded p-2 text-center" style={{ background: "hsl(220 13% 8%)" }}>
+              <div className="text-xs text-muted-foreground">{m.label}</div>
+              <div className="font-mono text-sm font-bold mt-0.5">{m.val}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Баланс */}
+        {stats?.balance > 0 && (
+          <div className="flex items-center justify-between text-sm font-mono border-t border-border/30 pt-3">
+            <span className="text-muted-foreground">Баланс MEXC Futures:</span>
+            <span className="font-bold bull">${stats.balance.toFixed(2)} USDT</span>
+          </div>
+        )}
+      </div>
+
+      {/* Статистика */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {[
+            { label: "Всего сделок", val: stats.total || 0,       cls: "" },
+            { label: "Прибыльных",   val: stats.wins || 0,        cls: "bull" },
+            { label: "Убыточных",    val: stats.losses || 0,      cls: "bear" },
+            { label: "Win Rate",     val: `${wr}%`,               cls: wr >= 55 ? "bull" : wr >= 45 ? "" : "bear" },
+          ].map((m, i) => (
+            <div key={i} className="panel rounded p-3 text-center">
+              <div className="text-xs text-muted-foreground mb-1">{m.label}</div>
+              <div className={`font-mono text-2xl font-bold ${m.cls}`}>{m.val}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* P&L */}
+      {closed > 0 && (
+        <div className="panel rounded p-3 flex items-center justify-between">
+          <span className="text-sm text-muted-foreground">Итого P&L (закрытые сделки):</span>
+          <span className={`font-mono font-bold text-lg ${(stats?.total_pnl || 0) >= 0 ? "bull" : "bear"}`}>
+            {(stats?.total_pnl || 0) >= 0 ? "+" : ""}${(stats?.total_pnl || 0).toFixed(2)} USDT
+          </span>
+        </div>
+      )}
+
+      {/* Открытые позиции */}
+      {openTrades.length > 0 && (
+        <div className="panel rounded p-3">
+          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5">
+            <div className="w-1.5 h-1.5 rounded-full bg-bull blink" />
+            Открытые позиции ({openTrades.length})
+          </div>
+          <div className="flex flex-col gap-2">
+            {openTrades.map((t: any, i: number) => (
+              <div key={i} className="rounded border border-border/40 p-2.5 flex flex-wrap items-center justify-between gap-2"
+                style={{ background: "hsl(220 13% 9%)" }}>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-bold text-sm">{t.pair}</span>
+                    <span className={`text-xs font-mono font-bold px-1.5 py-0.5 rounded ${t.direction === "LONG" ? "badge-bull" : "badge-bear"}`}>
+                      {t.direction}
+                    </span>
+                    <span className="text-xs text-muted-foreground font-mono">Score {t.score}/100</span>
+                  </div>
+                  <div className="text-xs text-muted-foreground font-mono mt-0.5">
+                    Открыта: {t.opened} · Позиция: ${t.pos?.toFixed(0)} × 10x
+                  </div>
+                </div>
+                <div className="text-right text-xs font-mono">
+                  <div className="text-muted-foreground">Вход ${t.entry?.toFixed ? t.entry.toFixed(4) : t.entry}</div>
+                  <div className="bull">TP2 ${t.tp2?.toFixed ? t.tp2.toFixed(4) : t.tp2}</div>
+                  <div className="bear">SL ${t.sl?.toFixed ? t.sl.toFixed(4) : t.sl}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* История сделок */}
+      {history.length > 0 && (
+        <div className="panel rounded p-3">
+          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">История сделок</div>
+          <div className="flex flex-col gap-1.5">
+            {history.map((t: any, i: number) => (
+              <div key={i} className="flex items-center justify-between text-xs font-mono py-1.5 px-2 rounded"
+                style={{ background: "hsl(220 13% 9%)" }}>
+                <div className="flex items-center gap-2">
+                  <span className={t.pnl >= 0 ? "bull" : "bear"}>{t.pnl >= 0 ? "✓" : "✗"}</span>
+                  <span className="font-bold">{t.pair}</span>
+                  <span className="text-muted-foreground">{t.direction}</span>
+                  <span className="text-muted-foreground hidden md:inline">{t.reason}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className={t.pnl >= 0 ? "bull" : "bear"}>
+                    {t.pnl >= 0 ? "+" : ""}${t.pnl?.toFixed(2)}
+                  </span>
+                  <span className="text-muted-foreground">{t.closed}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Лог */}
+      {log.length > 0 && (
+        <div className="rounded p-3 border border-border/30" style={{ background: "hsl(220 13% 7%)" }}>
+          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">Лог</div>
+          <div className="flex flex-col gap-0.5 max-h-32 overflow-y-auto">
+            {log.map((l, i) => (
+              <div key={i} className="text-xs font-mono text-muted-foreground">{l}</div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Как работает */}
+      <div className="rounded-lg p-3 border border-border/40 text-xs text-muted-foreground"
+        style={{ background: "hsl(220 13% 8%)" }}>
+        <div className="font-medium text-foreground mb-2">Как работает бот:</div>
+        <div className="flex flex-col gap-1">
+          <div>1. Каждые 5 минут PumpBot сканирует 150+ пар на 4 биржах</div>
+          <div>2. Сигнал с Score ≥ 70 → бот открывает позицию на MEXC Futures</div>
+          <div>3. Вход: 15% баланса × 10x плечо (до 3 позиций одновременно)</div>
+          <div>4. TP1/TP2 и SL берутся из сигнала. Таймаут — 4 часа</div>
+          <div>5. Все сделки приходят в Telegram с P&L</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 function Dashboard({ signals, loading, onScan, market }: {
@@ -880,6 +1128,7 @@ function TickerTape({ pairs }: { pairs: MarketPair[] }) {
 const NAV = [
   { id: "dashboard", label: "Дашборд",   icon: "LayoutDashboard" },
   { id: "signals",   label: "Сигналы",   icon: "Zap" },
+  { id: "bot",       label: "Авто-Бот",  icon: "Bot" },
   { id: "history",   label: "История",   icon: "History" },
   { id: "stats",     label: "Статистика",icon: "BarChart2" },
   { id: "telegram",  label: "Telegram",  icon: "Bell" },
@@ -943,6 +1192,7 @@ export default function Index() {
     switch (active) {
       case "dashboard": return <Dashboard signals={signals} loading={loading} onScan={scan} market={market} />;
       case "signals":   return <LiveFeed  signals={signals} loading={loading} onScan={scan} />;
+      case "bot":       return <BotSection />;
       case "history":   return <History />;
       case "stats":     return <StatsSection />;
       case "telegram":  return <TelegramSection />;

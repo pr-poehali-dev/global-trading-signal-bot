@@ -1,0 +1,20 @@
+{
+  "tests": [
+    {
+      "name": "Stats endpoint",
+      "method": "GET",
+      "path": "/?action=stats",
+      "expectedStatus": 200,
+      "expectedBody": { "running": false },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Tick when stopped",
+      "method": "GET",
+      "path": "/?action=tick",
+      "expectedStatus": 200,
+      "expectedBody": { "skipped": true },
+      "bodyMatcher": "partial"
+    }
+  ]
+}
