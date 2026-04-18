@@ -1,11 +1,19 @@
 {
   "tests": [
     {
-      "name": "Get saved pump signals",
+      "name": "Get saved signals",
       "method": "GET",
       "path": "/?action=saved",
       "expectedStatus": 200,
       "expectedBody": {"signals": []},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Get stats",
+      "method": "GET",
+      "path": "/?action=stats",
+      "expectedStatus": 200,
+      "expectedBody": {"stats": {"total": 0}},
       "bodyMatcher": "partial"
     }
   ]
