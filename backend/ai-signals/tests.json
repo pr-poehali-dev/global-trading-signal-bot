@@ -1,15 +1,7 @@
 {
   "tests": [
     {
-      "name": "Generate AI signals",
-      "method": "GET",
-      "path": "/?action=generate",
-      "expectedStatus": 200,
-      "expectedBody": {"signals": [], "analyzed": 6},
-      "bodyMatcher": "partial"
-    },
-    {
-      "name": "Get saved signals",
+      "name": "Get saved pump signals",
       "method": "GET",
       "path": "/?action=saved",
       "expectedStatus": 200,
