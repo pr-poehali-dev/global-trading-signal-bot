@@ -3,41 +3,40 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import Icon from "@/components/ui/icon";
 
 const API_SIGNALS = "https://functions.poehali.dev/4b074d99-4dd2-412c-904d-50db2bf5fbed";
-const API_MARKET = "https://functions.poehali.dev/b4830b16-e61f-4ab5-8a8b-eb323709567c";
+const API_MARKET  = "https://functions.poehali.dev/b4830b16-e61f-4ab5-8a8b-eb323709567c";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PumpSignal {
   id?: number;
   pair: string;
-  symbol?: string;
   type: "Pump" | "Dump";
   exchange: string;
   price_now: number;
   price_from: number;
   price_pct: number;
-  price_pct_6?: number;
   volume_usd: number;
   volume_pct: number;
   volume_increase_usd?: number;
-  volume_24h?: number;
-  change_24h?: number;
-  strength: number;
+  score: number;
+  strength?: number;
   timeframe: string;
   time: string;
   date?: string;
-  analysis?: string;
+  reasoning?: string;
+  factors?: string[];
   result?: string;
   result_pct?: number;
+  pnl_usdt?: number;
   entry?: number;
-  tp1?: number;
-  tp2?: number;
-  tp3?: number;
-  sl?: number;
-  tp1_pct?: number;
-  tp2_pct?: number;
-  tp3_pct?: number;
-  sl_pct?: number;
+  tp1?: number; tp2?: number; tp3?: number; sl?: number;
+  tp1_pct?: number; tp2_pct?: number; tp3_pct?: number; sl_pct?: number;
+  leverage?: number;
+  position_usdt?: number;
+  rvol?: number;
+  rsi?: number;
+  pct_1?: number; pct_3?: number; pct_6?: number;
+  analysis?: string;
 }
 
 interface MarketPair {
@@ -45,42 +44,38 @@ interface MarketPair {
   price: number;
   change: number;
   volume: number;
-  candles?: { time: number; open: number; high: number; low: number; close: number; volume: number }[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmtPrice(p: number): string {
+function fp(p: number): string {
   if (!p) return "—";
   if (p >= 10000) return p.toLocaleString("en-US", { maximumFractionDigits: 0 });
-  if (p >= 100) return p.toFixed(2);
-  if (p >= 1) return p.toFixed(4);
-  if (p >= 0.01) return p.toFixed(6);
+  if (p >= 100)   return p.toFixed(2);
+  if (p >= 1)     return p.toFixed(4);
+  if (p >= 0.001) return p.toFixed(6);
   return p.toFixed(8);
 }
 
-function fmtVol(v: number): string {
+function fv(v: number): string {
   if (!v) return "$0";
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
-  if (v >= 1_000) return `$${(v / 1_000).toFixed(2)}K`;
+  if (v >= 1_000)     return `$${(v / 1_000).toFixed(1)}K`;
   return `$${v.toFixed(0)}`;
 }
 
-function fmtVolIncrease(v: number): string {
-  if (!v) return "$0";
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
-  if (v >= 1_000) return `$${(v / 1_000).toFixed(2)}K`;
-  return `$${v.toFixed(0)}`;
+function scoreColor(s: number): string {
+  if (s >= 85) return "hsl(158 64% 48%)";
+  if (s >= 75) return "hsl(120 60% 50%)";
+  if (s >= 65) return "hsl(43 96% 56%)";
+  return "hsl(25 95% 55%)";
 }
 
-function timeAgo(dateStr: string): string {
-  if (!dateStr) return "";
-  const d = new Date(dateStr.includes("T") ? dateStr : dateStr + "Z");
-  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
-  if (diff < 60) return `${diff}с назад`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}м назад`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}ч назад`;
-  return `${Math.floor(diff / 86400)}д назад`;
+function leverageColor(l: number): string {
+  if (l >= 10) return "hsl(0 72% 51%)";
+  if (l >= 7)  return "hsl(25 95% 55%)";
+  if (l >= 5)  return "hsl(43 96% 56%)";
+  return "hsl(158 64% 48%)";
 }
 
 function useIsMobile() {
@@ -95,196 +90,316 @@ function useIsMobile() {
 
 // ─── Pump Card ────────────────────────────────────────────────────────────────
 
-function PumpCard({ sig, idx }: { sig: PumpSignal; idx: number }) {
-  const isPump = sig.type === "Pump";
-  const isNew = idx === 0;
+function PumpCard({ sig, idx, expanded, onToggle }: {
+  sig: PumpSignal; idx: number;
+  expanded: boolean; onToggle: () => void;
+}) {
+  const isPump    = sig.type === "Pump";
+  const lev       = sig.leverage || 1;
+  const posUsdt   = sig.position_usdt || 0;
+  const posWithLev = posUsdt * lev;
+
+  function profitLine(pct: number): string {
+    const p = posWithLev * pct / 100;
+    return `+$${p.toFixed(2)}`;
+  }
 
   return (
     <div
-      className="rounded-lg border fade-in"
+      className="rounded-lg border fade-in overflow-hidden"
       style={{
-        animationDelay: `${idx * 0.05}s`,
+        animationDelay: `${idx * 0.04}s`,
         background: isPump
-          ? "linear-gradient(135deg, hsl(158 64% 48% / 0.06) 0%, hsl(220 13% 11%) 60%)"
-          : "linear-gradient(135deg, hsl(0 72% 51% / 0.06) 0%, hsl(220 13% 11%) 60%)",
-        borderColor: isPump ? "hsl(158 64% 48% / 0.25)" : "hsl(0 72% 51% / 0.25)",
+          ? "linear-gradient(160deg, hsl(158 64% 48% / 0.07) 0%, hsl(220 13% 10%) 50%)"
+          : "linear-gradient(160deg, hsl(0 72% 51% / 0.07) 0%, hsl(220 13% 10%) 50%)",
+        borderColor: isPump ? "hsl(158 64% 48% / 0.3)" : "hsl(0 72% 51% / 0.3)",
       }}
     >
-      {/* Header */}
-      <div className="flex items-start justify-between p-3 pb-2">
+      {/* ── HEADER ── */}
+      <div className="flex items-start justify-between p-3 cursor-pointer" onClick={onToggle}>
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-lg">{isPump ? "🚀" : "📉"}</span>
+          <span className="text-xl">{isPump ? "🚀" : "💣"}</span>
           <div>
-            <div className="flex items-center gap-2">
-              <span className="font-mono font-bold text-sm">
-                {isPump ? "Pump" : "Dump"} - {sig.pair}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-mono font-bold text-base">{sig.pair}</span>
+              <span className="text-xs font-mono px-1.5 py-0.5 rounded font-bold"
+                style={{ background: isPump ? "hsl(158 64% 48% / 0.15)" : "hsl(0 72% 51% / 0.15)",
+                         color: isPump ? "hsl(158 64% 48%)" : "hsl(0 72% 51%)" }}>
+                {isPump ? "PUMP" : "DUMP"}
               </span>
-              {isNew && (
-                <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded"
-                  style={{ background: "hsl(43 96% 56% / 0.15)", color: "hsl(43 96% 56%)", border: "1px solid hsl(43 96% 56% / 0.3)" }}>
-                  NEW
-                </span>
+              {/* Score badge */}
+              <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full border"
+                style={{ color: scoreColor(sig.score), borderColor: scoreColor(sig.score) + "55",
+                         background: scoreColor(sig.score) + "15" }}>
+                {sig.score}/100
+              </span>
+              {/* Leverage badge */}
+              <span className="text-xs font-mono font-bold px-2 py-0.5 rounded"
+                style={{ color: leverageColor(lev),
+                         background: leverageColor(lev) + "20",
+                         border: `1px solid ${leverageColor(lev)}50` }}>
+                {lev}x
+              </span>
+            </div>
+            <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground font-mono">
+              <span>{sig.exchange}</span>
+              <span>·</span>
+              <span>{sig.timeframe}</span>
+              <span>·</span>
+              <span>{sig.date || sig.time}</span>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {sig.result && (
+            <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${sig.result === "win" ? "badge-bull" : "badge-bear"}`}>
+              {sig.result === "win" ? "✓ WIN" : "✗ LOSS"}
+              {sig.result_pct !== undefined && ` ${sig.result_pct > 0 ? "+" : ""}${sig.result_pct}%`}
+            </span>
+          )}
+          <Icon name={expanded ? "ChevronUp" : "ChevronDown"} size={16} className="text-muted-foreground" />
+        </div>
+      </div>
+
+      {/* ── PRICE + ENTRY ROW (всегда виден) ── */}
+      <div className="px-3 pb-2 flex flex-wrap gap-3">
+        {/* Движение цены */}
+        <div className="flex items-center gap-1.5 text-sm font-mono">
+          <span className="text-muted-foreground text-xs">Цена:</span>
+          <span>${fp(sig.price_from)}</span>
+          <span className="text-muted-foreground">→</span>
+          <span className="font-bold" style={{ color: isPump ? "hsl(158 64% 48%)" : "hsl(0 72% 51%)" }}>
+            ${fp(sig.price_now)}
+          </span>
+          <span className="text-xs font-bold px-1.5 py-0.5 rounded"
+            style={{ background: isPump ? "hsl(158 64% 48% / 0.12)" : "hsl(0 72% 51% / 0.12)",
+                     color: isPump ? "hsl(158 64% 48%)" : "hsl(0 72% 51%)" }}>
+            {isPump ? "+" : ""}{sig.pct_3 || sig.price_pct}%
+          </span>
+        </div>
+        {/* RVOL */}
+        {sig.rvol !== undefined && (
+          <div className="flex items-center gap-1 text-xs font-mono text-muted-foreground">
+            <span>RVOL</span>
+            <span className="font-bold" style={{ color: "hsl(43 96% 56%)" }}>{sig.rvol.toFixed(1)}x</span>
+          </div>
+        )}
+        {/* RSI */}
+        {sig.rsi !== undefined && (
+          <div className="flex items-center gap-1 text-xs font-mono text-muted-foreground">
+            <span>RSI</span>
+            <span className="font-bold text-foreground">{sig.rsi}</span>
+          </div>
+        )}
+      </div>
+
+      {/* ── ENTRY/TP/SL блок (всегда виден) ── */}
+      {(sig.entry || sig.tp1) && (
+        <div className="mx-3 mb-2 rounded border border-border/40 overflow-hidden"
+          style={{ background: "hsl(220 13% 7%)" }}>
+          {/* Вход */}
+          <div className="flex items-center justify-between px-3 py-2 border-b border-border/30">
+            <div className="flex items-center gap-2">
+              <span className="text-sm">📌</span>
+              <span className="font-mono text-xs font-bold" style={{ color: "hsl(43 96% 56%)" }}>
+                {isPump ? "ВХОД LONG" : "ВХОД SHORT"}
+              </span>
+              <span className="font-mono text-xs font-bold px-1.5 py-0.5 rounded"
+                style={{ color: leverageColor(lev), background: leverageColor(lev) + "20" }}>
+                × {lev}
+              </span>
+            </div>
+            <div className="text-right">
+              <div className="font-mono font-bold text-sm" style={{ color: "hsl(43 96% 56%)" }}>
+                ${fp(sig.entry)}
+              </div>
+              {posUsdt > 0 && (
+                <div className="text-xs text-muted-foreground font-mono">
+                  ${posUsdt.toFixed(0)} → <span style={{ color: "hsl(43 96% 56%)" }}>${posWithLev.toFixed(0)}</span>
+                </div>
               )}
             </div>
-            <div className="text-xs text-muted-foreground font-mono mt-0.5">
-              {isPump ? "Pump" : "Dump"} Activity on {sig.pair}{" "}
-              <span style={{ color: isPump ? "hsl(158 64% 48%)" : "hsl(0 72% 51%)" }}>
-                {isPump ? "🟢🟢" : "🔴🔴"}
-              </span>
-            </div>
           </div>
+          {/* TP уровни */}
+          {[
+            { label: "TP1 — осторожный",  val: sig.tp1, pct: sig.tp1_pct },
+            { label: "TP2 — оптимальный", val: sig.tp2, pct: sig.tp2_pct },
+            { label: "TP3 — агрессивный", val: sig.tp3, pct: sig.tp3_pct },
+          ].filter(t => t.val).map((t, i) => (
+            <div key={i} className="flex items-center justify-between px-3 py-1.5 border-b border-border/20">
+              <div className="flex items-center gap-2">
+                <span className="text-xs">✅</span>
+                <span className="font-mono text-xs text-muted-foreground">{t.label}</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="font-mono text-xs font-bold bull">${fp(t.val!)}</span>
+                {t.pct !== undefined && (
+                  <span className="font-mono text-xs bull opacity-80">
+                    +{t.pct.toFixed(1)}% · <span className="text-green-400">{profitLine(t.pct)}</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+          {/* SL */}
+          {sig.sl && (
+            <div className="flex items-center justify-between px-3 py-1.5">
+              <div className="flex items-center gap-2">
+                <span className="text-xs">🛑</span>
+                <span className="font-mono text-xs text-muted-foreground">Стоп-лосс</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="font-mono text-xs font-bold bear">${fp(sig.sl)}</span>
+                {sig.sl_pct !== undefined && (
+                  <span className="font-mono text-xs bear opacity-80">
+                    -{sig.sl_pct.toFixed(1)}% · <span className="text-red-400">-${(posWithLev * sig.sl_pct / 100).toFixed(2)}</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <span className="text-xs font-mono text-muted-foreground">{sig.exchange}</span>
-          <span className="text-xs font-mono text-muted-foreground">{sig.timeframe} · {sig.time}</span>
+      )}
+
+      {/* ── SCORE BAR ── */}
+      <div className="px-3 pb-2 flex items-center gap-2">
+        <span className="text-xs text-muted-foreground font-mono w-12 shrink-0">Сила:</span>
+        <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+          <div className="h-full rounded-full transition-all"
+            style={{ width: `${sig.score}%`, background: scoreColor(sig.score) }} />
         </div>
+        <span className="font-mono text-xs font-bold w-12 text-right" style={{ color: scoreColor(sig.score) }}>
+          {sig.score}/100
+        </span>
       </div>
 
-      {/* Body */}
-      <div className="px-3 pb-3 flex flex-col gap-2">
-        {/* Price row */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <Icon name="DollarSign" size={13} className="text-muted-foreground shrink-0" />
-          <span className="text-xs text-muted-foreground">Price:</span>
-          <span className="font-mono text-sm font-semibold">${fmtPrice(sig.price_from)}</span>
-          <span className="text-muted-foreground">➜</span>
-          <span className="font-mono text-sm font-bold" style={{ color: isPump ? "hsl(158 64% 48%)" : "hsl(0 72% 51%)" }}>
-            ${fmtPrice(sig.price_now)}
-          </span>
-          <span className="font-mono text-sm font-bold px-2 py-0.5 rounded"
-            style={{
-              background: isPump ? "hsl(158 64% 48% / 0.12)" : "hsl(0 72% 51% / 0.12)",
-              color: isPump ? "hsl(158 64% 48%)" : "hsl(0 72% 51%)",
-            }}>
-            ({isPump ? "+" : ""}{sig.price_pct}%)
-          </span>
-        </div>
+      {/* ── ДЕТАЛИ (по клику) ── */}
+      {expanded && (
+        <div className="border-t border-border/30 px-3 py-3 flex flex-col gap-3"
+          style={{ background: "hsl(220 13% 8%)" }}>
 
-        {/* Volume row */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <Icon name="BarChart2" size={13} className="text-muted-foreground shrink-0" />
-          <span className="text-xs text-muted-foreground">Volume:</span>
-          <span className="font-mono text-sm font-semibold">{fmtVol(sig.volume_usd)}</span>
-          <span className="font-mono text-sm font-bold" style={{ color: "hsl(158 64% 48%)" }}>
-            (+{sig.volume_pct.toFixed(2)}%)
-          </span>
-        </div>
-
-        {/* Volume increase */}
-        {sig.volume_increase_usd !== undefined && sig.volume_increase_usd > 0 && (
-          <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
-            <span>Volume increased by</span>
-            <span className="font-semibold" style={{ color: "hsl(158 64% 48%)" }}>
-              {fmtVolIncrease(sig.volume_increase_usd)}
-            </span>
-            <span>⬆️</span>
-          </div>
-        )}
-
-        {/* Entry / TP / SL block */}
-        {(sig.entry || sig.tp1 || sig.sl) && (
-          <div className="mt-1 rounded-lg overflow-hidden border border-border/50"
-            style={{ background: "hsl(220 13% 8%)" }}>
-            {/* Entry */}
-            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/30">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-mono" style={{ color: "hsl(43 96% 56%)" }}>📌</span>
-                <span className="text-xs font-mono font-semibold" style={{ color: "hsl(43 96% 56%)" }}>
-                  {isPump ? "ВХОД LONG" : "ВХОД SHORT"}
-                </span>
-              </div>
-              <span className="font-mono text-sm font-bold" style={{ color: "hsl(43 96% 56%)" }}>
-                ${fmtPrice(sig.entry || sig.price_now)}
-              </span>
-            </div>
-            {/* TP levels */}
+          {/* Метрики */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             {[
-              { label: "TP1 (осторожный)", val: sig.tp1, pct: sig.tp1_pct },
-              { label: "TP2 (оптимальный)", val: sig.tp2, pct: sig.tp2_pct },
-              { label: "TP3 (агрессивный)", val: sig.tp3, pct: sig.tp3_pct },
-            ].filter(t => t.val).map((t, i) => (
-              <div key={i} className="flex items-center justify-between px-3 py-1.5 border-b border-border/30">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs">✅</span>
-                  <span className="text-xs text-muted-foreground font-mono">{t.label}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs font-bold bull">${fmtPrice(t.val!)}</span>
-                  {t.pct !== undefined && (
-                    <span className="text-xs font-mono bull opacity-70">(+{t.pct.toFixed(1)}%)</span>
-                  )}
-                </div>
+              { label: "Объём",  val: fv(sig.volume_usd), sub: "" },
+              { label: "RVOL",   val: `${(sig.rvol || 1).toFixed(1)}x`, sub: "vs среднее" },
+              { label: "RSI",    val: String(sig.rsi || 50), sub: "14-period" },
+              { label: "Таймфрейм", val: sig.timeframe, sub: sig.exchange },
+            ].map((m, i) => (
+              <div key={i} className="rounded p-2" style={{ background: "hsl(220 13% 11%)" }}>
+                <div className="text-xs text-muted-foreground mb-0.5">{m.label}</div>
+                <div className="font-mono text-sm font-bold">{m.val}</div>
+                {m.sub && <div className="text-xs text-muted-foreground">{m.sub}</div>}
               </div>
             ))}
-            {/* SL */}
-            {sig.sl && (
-              <div className="flex items-center justify-between px-3 py-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs">🛑</span>
-                  <span className="text-xs text-muted-foreground font-mono">Стоп-лосс</span>
+          </div>
+
+          {/* Движение цены */}
+          <div className="rounded p-3" style={{ background: "hsl(220 13% 11%)" }}>
+            <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">Движение цены</div>
+            <div className="flex flex-wrap gap-3">
+              {[
+                { label: "15м", val: sig.pct_1 },
+                { label: "45м", val: sig.pct_3 },
+                { label: "90м", val: sig.pct_6 },
+              ].filter(x => x.val !== undefined).map((x, i) => (
+                <div key={i} className="flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground font-mono">{x.label}:</span>
+                  <span className={`font-mono text-sm font-bold ${(x.val || 0) >= 0 ? "bull" : "bear"}`}>
+                    {(x.val || 0) >= 0 ? "+" : ""}{(x.val || 0).toFixed(2)}%
+                  </span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs font-bold bear">${fmtPrice(sig.sl)}</span>
-                  {sig.sl_pct !== undefined && (
-                    <span className="text-xs font-mono bear opacity-70">(-{sig.sl_pct.toFixed(1)}%)</span>
-                  )}
+              ))}
+            </div>
+          </div>
+
+          {/* Почему дан сигнал */}
+          {sig.factors && sig.factors.length > 0 && (
+            <div className="rounded p-3 border" style={{ background: "hsl(220 13% 11%)", borderColor: "hsl(220 13% 18%)" }}>
+              <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Icon name="Info" size={11} />
+                Почему дан сигнал
+              </div>
+              <div className="flex flex-col gap-1.5">
+                {sig.factors.map((f, i) => (
+                  <div key={i} className="text-xs font-mono text-foreground flex items-start gap-1.5">
+                    <span className="text-muted-foreground shrink-0">•</span>
+                    <span>{f}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Позиция */}
+          {sig.position_usdt !== undefined && sig.position_usdt > 0 && (
+            <div className="rounded p-3" style={{ background: "hsl(220 13% 11%)" }}>
+              <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">Позиция (виртуальный банк $1000)</div>
+              <div className="flex flex-wrap gap-4 text-sm font-mono">
+                <div>
+                  <span className="text-muted-foreground text-xs">Своих денег: </span>
+                  <span className="font-bold">${sig.position_usdt.toFixed(0)}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground text-xs">Плечо: </span>
+                  <span className="font-bold" style={{ color: leverageColor(lev) }}>{lev}x</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground text-xs">С плечом: </span>
+                  <span className="font-bold" style={{ color: "hsl(43 96% 56%)" }}>${posWithLev.toFixed(0)}</span>
                 </div>
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          )}
 
-        {/* Strength bar */}
-        <div className="flex items-center gap-2 mt-1">
-          <span className="text-xs text-muted-foreground font-mono shrink-0">Сила:</span>
-          <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{
-                width: `${sig.strength}%`,
-                background: sig.strength >= 80
-                  ? "hsl(158 64% 48%)"
-                  : sig.strength >= 65
-                    ? "hsl(43 96% 56%)"
-                    : "hsl(25 95% 55%)",
-              }}
-            />
-          </div>
-          <span className="font-mono text-xs font-bold" style={{
-            color: sig.strength >= 80 ? "hsl(158 64% 48%)" : sig.strength >= 65 ? "hsl(43 96% 56%)" : "hsl(25 95% 55%)"
-          }}>{sig.strength}%</span>
+          {/* Результат */}
+          {sig.result && (
+            <div className={`rounded p-3 border ${sig.result === "win" ? "border-bull/30" : "border-bear/30"}`}
+              style={{ background: sig.result === "win" ? "hsl(158 64% 48% / 0.06)" : "hsl(0 72% 51% / 0.06)" }}>
+              <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Результат</div>
+              <div className="flex items-center gap-3 font-mono">
+                <span className={`font-bold text-lg ${sig.result === "win" ? "bull" : "bear"}`}>
+                  {sig.result === "win" ? "✓ WIN" : "✗ LOSS"}
+                </span>
+                {sig.result_pct !== undefined && (
+                  <span className={`font-bold ${sig.result === "win" ? "bull" : "bear"}`}>
+                    {sig.result_pct > 0 ? "+" : ""}{sig.result_pct}%
+                  </span>
+                )}
+                {sig.pnl_usdt !== undefined && (
+                  <span className={sig.pnl_usdt >= 0 ? "bull" : "bear"}>
+                    {sig.pnl_usdt >= 0 ? "+" : ""}${sig.pnl_usdt.toFixed(2)}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
-
-        {/* Result badge if closed */}
-        {sig.result && (
-          <div className="flex items-center gap-2">
-            <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${sig.result === "win" ? "badge-bull" : "badge-bear"}`}>
-              {sig.result === "win" ? "✓ WIN" : "✗ LOSS"} {sig.result_pct !== undefined ? `${sig.result_pct > 0 ? "+" : ""}${sig.result_pct}%` : ""}
-            </span>
-          </div>
-        )}
-      </div>
+      )}
     </div>
   );
 }
 
 // ─── Live Feed ────────────────────────────────────────────────────────────────
 
-function LiveFeed({ signals, loading, onScan }: { signals: PumpSignal[]; loading: boolean; onScan: () => void }) {
+function LiveFeed({ signals, loading, onScan }: {
+  signals: PumpSignal[]; loading: boolean; onScan: () => void;
+}) {
   const [filter, setFilter] = useState<"Все" | "Pump" | "Dump">("Все");
+  const [expanded, setExpanded] = useState<number | null>(null);
   const filtered = signals.filter(s => filter === "Все" || s.type === filter);
 
   return (
     <div className="flex flex-col gap-3 fade-in">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold">Pump-сигналы</span>
+          <span className="text-sm font-semibold">Сигналы</span>
           {loading
             ? <span className="badge-gold text-xs px-2 py-0.5 rounded-full font-mono flex items-center gap-1.5">
                 <div className="w-2 h-2 border border-current border-t-transparent rounded-full animate-spin" />
-                сканирую...
+                скан...
               </span>
-            : <span className="badge-bull text-xs px-2 py-0.5 rounded-full font-mono">{signals.length} сигналов</span>
+            : <span className="badge-bull text-xs px-2 py-0.5 rounded-full font-mono">{signals.length}</span>
           }
         </div>
         <div className="flex items-center gap-2">
@@ -306,78 +421,64 @@ function LiveFeed({ signals, loading, onScan }: { signals: PumpSignal[]; loading
 
       {loading ? (
         <div className="flex flex-col gap-2">
-          {Array(3).fill(null).map((_, i) => (
+          {[0,1,2].map(i => (
             <div key={i} className="rounded-lg border border-border p-4 animate-pulse" style={{ background: "hsl(220 13% 11%)" }}>
               <div className="flex gap-3 mb-3">
-                <div className="w-7 h-7 bg-secondary rounded" />
-                <div className="flex-1"><div className="w-40 h-4 bg-secondary rounded mb-2" /><div className="w-24 h-3 bg-secondary rounded" /></div>
+                <div className="w-8 h-8 bg-secondary rounded" />
+                <div><div className="w-40 h-4 bg-secondary rounded mb-2" /><div className="w-24 h-3 bg-secondary rounded" /></div>
               </div>
-              <div className="w-full h-3 bg-secondary rounded mb-2" />
-              <div className="w-3/4 h-3 bg-secondary rounded" />
+              <div className="w-full h-16 bg-secondary rounded" />
             </div>
           ))}
         </div>
       ) : filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 gap-3 text-muted-foreground">
-          <span className="text-4xl">🔍</span>
-          <div className="text-sm font-medium">Активных pump-сигналов нет</div>
+        <div className="flex flex-col items-center py-16 gap-3 text-muted-foreground">
+          <span className="text-5xl">🔍</span>
+          <div className="text-sm font-medium">Нет активных сигналов</div>
           <div className="text-xs text-center max-w-xs opacity-60">
-            Бот сканирует 80+ пар каждые 5 минут. Сигнал появляется при резком росте цены (+3%+) и объёма (+30%+)
+            Бот сканирует 150+ пар каждые 5 минут. Сигнал появится при обнаружении аномальной активности.
           </div>
-          <button onClick={onScan} className="mt-2 text-xs px-4 py-2 rounded border border-primary text-primary hover:bg-primary/10 transition-colors font-mono">
+          <button onClick={onScan}
+            className="mt-1 text-xs px-4 py-2 rounded border border-primary text-primary hover:bg-primary/10 font-mono transition-colors">
             Запустить сканирование
           </button>
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          {filtered.map((s, i) => <PumpCard key={s.id || i} sig={s} idx={i} />)}
+          {filtered.map((s, i) => (
+            <PumpCard key={s.id || i} sig={s} idx={i}
+              expanded={expanded === i} onToggle={() => setExpanded(expanded === i ? null : i)} />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-// ─── History ──────────────────────────────────────────────────────────────────
+// ─── History ─────────────────────────────────────────────────────────────────
 
 function History() {
   const [signals, setSignals] = useState<PumpSignal[]>([]);
   const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState<any>(null);
+  const [expanded, setExpanded] = useState<number | null>(null);
 
   useEffect(() => {
-    Promise.all([
-      fetch(`${API_SIGNALS}?action=saved&limit=100`).then(r => r.json()),
-      fetch(`${API_SIGNALS}?action=stats`).then(r => r.json()),
-    ]).then(([savedData, statsData]) => {
-      setSignals(savedData.signals || []);
-      setStats(statsData.stats || null);
-      setLoading(false);
-    }).catch(() => setLoading(false));
+    fetch(`${API_SIGNALS}?action=saved&limit=100`)
+      .then(r => r.json())
+      .then(d => { setSignals(d.signals || []); setLoading(false); })
+      .catch(() => setLoading(false));
   }, []);
 
   return (
     <div className="flex flex-col gap-3 fade-in">
-      <span className="text-sm font-semibold">История сигналов</span>
-
-      {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-          {[
-            { label: "Всего сигналов", value: stats.total, cls: "" },
-            { label: "Pump", value: stats.pumps, cls: "bull" },
-            { label: "Dump", value: stats.dumps, cls: "bear" },
-            { label: "Win Rate", value: `${stats.win_rate}%`, cls: stats.win_rate >= 60 ? "bull" : "bear" },
-          ].map((m, i) => (
-            <div key={i} className="panel rounded p-3">
-              <div className="text-xs text-muted-foreground mb-1">{m.label}</div>
-              <div className={`font-mono text-lg font-bold ${m.cls}`}>{m.value}</div>
-            </div>
-          ))}
-        </div>
-      )}
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold">История сигналов</span>
+        <span className="text-xs text-muted-foreground font-mono">{signals.length} записей</span>
+      </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-12 text-muted-foreground">
-          <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        <div className="flex items-center justify-center py-12">
+          <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
         </div>
       ) : signals.length === 0 ? (
         <div className="flex flex-col items-center py-16 gap-2 text-muted-foreground">
@@ -385,15 +486,18 @@ function History() {
           <span className="text-sm">История пуста — сигналы появятся после первых пампов</span>
         </div>
       ) : (
-        <div className="flex flex-col gap-2">
-          {signals.map((s, i) => <PumpCard key={s.id || i} sig={s} idx={i} />)}
+        <div className="flex flex-col gap-3">
+          {signals.map((s, i) => (
+            <PumpCard key={s.id || i} sig={s} idx={i}
+              expanded={expanded === i} onToggle={() => setExpanded(expanded === i ? null : i)} />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-// ─── Stats ────────────────────────────────────────────────────────────────────
+// ─── Statistics ───────────────────────────────────────────────────────────────
 
 function StatsSection() {
   const [stats, setStats] = useState<any>(null);
@@ -411,42 +515,100 @@ function StatsSection() {
       <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
     </div>
   );
+  if (!stats) return <div className="text-sm text-muted-foreground text-center py-8">Нет данных</div>;
 
-  if (!stats) return <div className="text-muted-foreground text-sm py-8 text-center">Нет данных</div>;
+  const p = stats.portfolio || {};
 
   return (
-    <div className="flex flex-col gap-3 fade-in">
+    <div className="flex flex-col gap-4 fade-in">
       <span className="text-sm font-semibold">Статистика</span>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+      {/* Портфель */}
+      {p.balance !== undefined && (
+        <div className="panel rounded p-4" style={{ background: "linear-gradient(135deg, hsl(158 64% 48% / 0.08), hsl(220 13% 11%))" }}>
+          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Виртуальный портфель · старт $1,000</div>
+          <div className="flex flex-wrap gap-6">
+            <div>
+              <div className="font-mono text-3xl font-bold bull">${p.balance?.toFixed(2)}</div>
+              <div className={`text-sm font-mono mt-1 ${p.pnl >= 0 ? "bull" : "bear"}`}>
+                {p.pnl >= 0 ? "+" : ""}${p.pnl?.toFixed(2)} ({p.pnl_pct >= 0 ? "+" : ""}{p.pnl_pct?.toFixed(2)}%)
+              </div>
+            </div>
+            <div className="flex flex-col justify-center">
+              <div className="text-xs text-muted-foreground">Сигналов</div>
+              <div className="font-mono text-xl font-bold">{stats.total}</div>
+            </div>
+            <div className="flex flex-col justify-center">
+              <div className="text-xs text-muted-foreground">Win Rate</div>
+              <div className={`font-mono text-xl font-bold ${stats.win_rate >= 60 ? "bull" : "bear"}`}>{stats.win_rate}%</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Основные метрики */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         {[
-          { label: "Всего сигналов", value: stats.total, sub: "за всё время", cls: "" },
-          { label: "Pump-сигналов", value: stats.pumps, sub: "рост цены + объём", cls: "bull" },
-          { label: "Dump-сигналов", value: stats.dumps, sub: "падение + объём", cls: "bear" },
-          { label: "Win Rate", value: `${stats.win_rate}%`, sub: `${stats.wins}W / ${stats.losses}L`, cls: stats.win_rate >= 60 ? "bull" : "bear" },
-          { label: "Закрытых", value: stats.closed, sub: "с результатом", cls: "" },
-          { label: "В обработке", value: stats.total - stats.closed, sub: "активных", cls: "gold" },
+          { label: "Всего сигналов",  val: stats.total,   cls: "",                              sub: "за всё время" },
+          { label: "Pump",            val: stats.pumps,   cls: "bull",                          sub: "рост + объём" },
+          { label: "Dump",            val: stats.dumps,   cls: "bear",                          sub: "падение + объём" },
+          { label: "Win Rate",        val: `${stats.win_rate}%`, cls: stats.win_rate >= 60 ? "bull" : "bear", sub: `${stats.wins}W / ${stats.losses}L` },
         ].map((m, i) => (
-          <div key={i} className="panel rounded p-4">
+          <div key={i} className="panel rounded p-3">
             <div className="text-xs text-muted-foreground mb-1">{m.label}</div>
-            <div className={`font-mono text-2xl font-bold ${m.cls}`}>{m.value}</div>
+            <div className={`font-mono text-2xl font-bold ${m.cls}`}>{m.val}</div>
             <div className="text-xs text-muted-foreground mt-1">{m.sub}</div>
           </div>
         ))}
       </div>
 
-      {stats.daily && stats.daily.length > 0 && (
+      {/* Доп метрики */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+        {[
+          { label: "Средний Score",     val: `${stats.avg_score}/100`, sub: "качество сигналов" },
+          { label: "Средний Win",       val: `+${stats.avg_win_pct}%`, sub: "доходность" },
+          { label: "Общий P&L",         val: `${stats.total_pnl >= 0 ? "+" : ""}$${stats.total_pnl}`, sub: "виртуальный" },
+        ].map((m, i) => (
+          <div key={i} className="panel rounded p-3">
+            <div className="text-xs text-muted-foreground mb-1">{m.label}</div>
+            <div className="font-mono text-lg font-bold">{m.val}</div>
+            <div className="text-xs text-muted-foreground">{m.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* По биржам */}
+      {stats.by_exchange?.length > 0 && (
         <div className="panel rounded p-3">
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Активность за 7 дней</div>
-          <div className="flex items-end gap-1 h-20">
-            {stats.daily.slice(0, 7).reverse().map((d: any, i: number) => {
-              const max = Math.max(...stats.daily.slice(0, 7).map((x: any) => x.count));
+          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">По биржам</div>
+          <div className="flex flex-col gap-2">
+            {stats.by_exchange.map((e: any, i: number) => (
+              <div key={i} className="flex items-center gap-3">
+                <div className="w-16 text-xs font-mono">{e.exchange}</div>
+                <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+                  <div className="h-full rounded-full bg-primary"
+                    style={{ width: `${stats.total > 0 ? (e.total / stats.total) * 100 : 0}%` }} />
+                </div>
+                <div className="text-xs font-mono text-muted-foreground w-16 text-right">{e.total} сигн.</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* График активности */}
+      {stats.daily?.length > 0 && (
+        <div className="panel rounded p-3">
+          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Активность (14 дней)</div>
+          <div className="flex items-end gap-1 h-24">
+            {[...stats.daily].reverse().slice(0, 14).map((d: any, i: number) => {
+              const max = Math.max(...stats.daily.map((x: any) => x.count));
               const h = max > 0 ? Math.max((d.count / max) * 100, 4) : 4;
               return (
-                <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                  <div className="w-full rounded-t" style={{ height: `${h}%`, background: "hsl(158 64% 48% / 0.5)" }} />
-                  <div className="text-[9px] font-mono text-muted-foreground">{d.date?.slice(5)}</div>
-                  <div className="text-[9px] font-mono text-foreground">{d.count}</div>
+                <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
+                  <div className="w-full rounded-t transition-all" style={{ height: `${h}%`, background: "hsl(158 64% 48% / 0.6)" }} />
+                  <div className="text-[9px] font-mono text-muted-foreground leading-none">{d.date?.slice(5)}</div>
+                  <div className="text-[9px] font-mono text-foreground leading-none">{d.count}</div>
                 </div>
               );
             })}
@@ -457,7 +619,7 @@ function StatsSection() {
   );
 }
 
-// ─── Telegram Setup ───────────────────────────────────────────────────────────
+// ─── Telegram ─────────────────────────────────────────────────────────────────
 
 function TelegramSection() {
   const [testing, setTesting] = useState(false);
@@ -468,8 +630,8 @@ function TelegramSection() {
     try {
       const r = await fetch(`${API_SIGNALS}?action=test_telegram`);
       const d = await r.json();
-      setResult(d.ok ? "✅ Тест отправлен в Telegram!" : "❌ Ошибка: " + (d.error || "неизвестно"));
-    } catch { setResult("❌ Ошибка соединения"); }
+      setResult(d.ok ? "✅ Тест отправлен!" : "❌ Ошибка: " + (d.error || ""));
+    } catch { setResult("❌ Нет соединения"); }
     setTesting(false);
   };
 
@@ -479,23 +641,32 @@ function TelegramSection() {
 
       <div className="panel rounded p-4 flex flex-col gap-3">
         <div className="flex items-center gap-2">
-          <span className="text-xl">📱</span>
+          <span className="text-2xl">📱</span>
           <div>
-            <div className="font-medium text-sm">Уведомления о пампах</div>
+            <div className="font-medium text-sm">Уведомления о пампах 24/7</div>
             <div className="text-xs text-muted-foreground">Бот торгует 24/7 независимо от того, открыт сайт или нет</div>
           </div>
         </div>
 
-        <div className="text-xs text-muted-foreground flex flex-col gap-1.5 border border-border rounded p-3">
-          <div className="font-medium text-foreground mb-1">Как выглядит сигнал в Telegram:</div>
-          <div className="font-mono bg-secondary/40 rounded p-2 text-xs leading-relaxed">
-            🚀 <b>Pump - CHR/USDT</b><br/>
-            Pump Activity on CHR/USDT 🟢🟢<br/><br/>
-            💰 Price: $0.0209 ➜ $0.0225 (+7.35%)<br/>
-            📊 Volume: $2.06M (+19.92%)<br/>
-            Volume increased by $342.86K ⬆️<br/>
-            ⏱ Timeframe: 15m | Exchange: Binance
-          </div>
+        <div className="text-xs font-mono bg-secondary/30 rounded p-3 leading-relaxed border border-border">
+          <div className="text-muted-foreground mb-2 font-sans font-semibold">Пример сигнала в Telegram:</div>
+          🚀 <b>PUMP — SOL/USDT</b>  [Binance]<br/>
+          🟢🟢 Score: <b>82/100</b> · 15m · 14:23 UTC<br/>
+          ━━━━━━━━━━━━━━━━━━━━━━━<br/>
+          💰 Цена: $145.20 → <b>$151.80</b> (<b>+4.54%</b> / 45м)<br/>
+          📊 Объём: <b>$3.2M</b> · RVOL <b>4.2x</b> · RSI <b>68</b><br/><br/>
+          <b>━ ПОЧЕМУ СИГНАЛ ━</b><br/>
+          • 💥 RVOL 4.2x — экстремальный объём<br/>
+          • 🚀 Цена +4.54% за 45 мин<br/>
+          • ⚡ Ускорение: нарастает<br/>
+          • 📊 RSI 68 — зона роста<br/><br/>
+          🎯 <b>СИГНАЛ: LONG 📈</b><br/>
+          📌 Вход: <b>$151.80</b><br/>
+          🔥 Плечо: <b>7x</b> (позиция $80 → $560)<br/><br/>
+          ✅ TP1: <b>$153.80</b>  +1.3%  → <b>+$7.28</b><br/>
+          ✅ TP2: <b>$156.90</b>  +3.4%  → <b>+$19.04</b><br/>
+          ✅ TP3: <b>$161.40</b>  +6.3%  → <b>+$35.28</b><br/>
+          🛑 SL: <b>$149.50</b>  -1.5%  → <b>-$8.40</b>
         </div>
 
         <button onClick={test} disabled={testing}
@@ -510,11 +681,11 @@ function TelegramSection() {
           </div>
         )}
 
-        <div className="border-t border-border pt-3 text-xs text-muted-foreground flex flex-col gap-1">
+        <div className="border-t border-border pt-3 text-xs text-muted-foreground flex flex-col gap-1.5">
           <div className="font-medium text-foreground">Настройка:</div>
-          <div>1. Создайте бота через @BotFather → получите токен</div>
+          <div>1. Создайте бота через <code className="bg-secondary px-1 rounded">@BotFather</code> → получите токен</div>
           <div>2. Добавьте <code className="bg-secondary px-1 rounded">TELEGRAM_BOT_TOKEN</code> в Секреты</div>
-          <div>3. Добавьте <code className="bg-secondary px-1 rounded">TELEGRAM_CHAT_ID</code> (ваш ID из @userinfobot)</div>
+          <div>3. Добавьте <code className="bg-secondary px-1 rounded">TELEGRAM_CHAT_ID</code> (ваш ID из <code className="bg-secondary px-1 rounded">@userinfobot</code>)</div>
         </div>
       </div>
     </div>
@@ -524,32 +695,30 @@ function TelegramSection() {
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 function Dashboard({ signals, loading, onScan, market }: {
-  signals: PumpSignal[];
-  loading: boolean;
-  onScan: () => void;
-  market: MarketPair[];
+  signals: PumpSignal[]; loading: boolean; onScan: () => void; market: MarketPair[];
 }) {
   const pumps = signals.filter(s => s.type === "Pump");
-  const dumps = signals.filter(s => s.type === "Dump");
-  const btc = market.find(p => p.symbol === "BTC/USDT" || p.symbol === "BTCUSDT");
-  const topSignal = signals[0];
+  const dumps  = signals.filter(s => s.type === "Dump");
+  const btc    = market.find(p => p.symbol?.includes("BTC"));
+  const topSig = signals[0];
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <div className="flex flex-col gap-3 fade-in">
-      {/* Metrics */}
+      {/* Метрики */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <div className="panel rounded p-3">
-          <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wider">Пампов сегодня</div>
+          <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wider">Пампов</div>
           <div className="font-mono text-2xl font-bold bull">{pumps.length}</div>
-          <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1"><span className="text-base">🚀</span> Pump-сигналы</div>
+          <div className="text-xs text-muted-foreground mt-1">🚀 активных</div>
         </div>
         <div className="panel rounded p-3">
-          <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wider">Дампов сегодня</div>
+          <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wider">Дампов</div>
           <div className="font-mono text-2xl font-bold bear">{dumps.length}</div>
-          <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1"><span className="text-base">📉</span> Dump-сигналы</div>
+          <div className="text-xs text-muted-foreground mt-1">💣 активных</div>
         </div>
         <div className="panel rounded p-3">
-          <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wider">BTC/USDT</div>
+          <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wider">BTC</div>
           {btc ? (
             <>
               <div className="font-mono text-base font-semibold" style={{ color: btc.change >= 0 ? "hsl(var(--bull))" : "hsl(var(--bear))" }}>
@@ -559,33 +728,32 @@ function Dashboard({ signals, loading, onScan, market }: {
                 {btc.change >= 0 ? "+" : ""}{btc.change.toFixed(2)}%
               </div>
             </>
-          ) : (
-            <div className="font-mono text-base text-muted-foreground">...</div>
-          )}
+          ) : <div className="text-muted-foreground font-mono">...</div>}
         </div>
         <div className="panel rounded p-3">
-          <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wider">Сканирование</div>
-          <div className="font-mono text-base font-semibold">80+ пар</div>
-          <div className="text-xs text-muted-foreground mt-1">каждые 5 минут</div>
+          <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wider">Скан</div>
+          <div className="font-mono text-base font-semibold">150+ пар</div>
+          <div className="text-xs text-muted-foreground mt-1">4 биржи · 5 мин</div>
         </div>
       </div>
 
-      {/* Top signal */}
-      {topSignal && (
+      {/* Топ сигнал */}
+      {topSig && (
         <div>
           <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">Последний сигнал</div>
-          <PumpCard sig={topSignal} idx={0} />
+          <PumpCard sig={topSig} idx={0} expanded={expanded} onToggle={() => setExpanded(!expanded)} />
         </div>
       )}
 
-      {/* Market ticker */}
+      {/* Рынок */}
       {market.length > 0 && (
         <div className="panel rounded p-3">
           <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">Рынок</div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
             {market.slice(0, 8).map((p, i) => (
-              <div key={i} className="flex items-center justify-between text-xs font-mono">
-                <span className="text-muted-foreground">{p.symbol.replace("USDT", "")}</span>
+              <div key={i} className="flex items-center justify-between text-xs font-mono py-1 px-2 rounded"
+                style={{ background: "hsl(220 13% 9%)" }}>
+                <span className="text-muted-foreground">{p.symbol?.replace("USDT", "").replace("-USDT", "")}</span>
                 <span className={p.change >= 0 ? "bull" : "bear"}>{p.change >= 0 ? "+" : ""}{p.change.toFixed(2)}%</span>
               </div>
             ))}
@@ -593,31 +761,25 @@ function Dashboard({ signals, loading, onScan, market }: {
         </div>
       )}
 
-      {/* Status */}
+      {/* Статус */}
       <div className="panel rounded p-2.5 flex flex-wrap items-center gap-4">
-        <div className="flex items-center gap-1.5">
-          <div className="w-1.5 h-1.5 rounded-full blink bg-bull" />
-          <span className="text-xs font-mono">Binance API</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-1.5 h-1.5 rounded-full blink bg-bull" />
-          <span className="text-xs font-mono">Pump Detector</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-1.5 h-1.5 rounded-full blink bg-bull" />
-          <span className="text-xs font-mono">Cron 5m</span>
-        </div>
+        {["Binance", "Bybit", "OKX", "MEXC"].map(e => (
+          <div key={e} className="flex items-center gap-1.5">
+            <div className="w-1.5 h-1.5 rounded-full blink bg-bull" />
+            <span className="text-xs font-mono">{e}</span>
+          </div>
+        ))}
         <button onClick={onScan} disabled={loading}
           className="ml-auto text-xs font-mono px-3 py-1 rounded border border-primary/40 text-primary hover:bg-primary/10 transition-colors disabled:opacity-40 flex items-center gap-1.5">
           <Icon name="RefreshCw" size={10} className={loading ? "animate-spin" : ""} />
-          {loading ? "Сканирую..." : "Скан сейчас"}
+          {loading ? "Сканирую..." : "Скан"}
         </button>
       </div>
     </div>
   );
 }
 
-// ─── Ticker Tape ──────────────────────────────────────────────────────────────
+// ─── Ticker Tape ─────────────────────────────────────────────────────────────
 
 function TickerTape({ pairs }: { pairs: MarketPair[] }) {
   if (!pairs.length) return null;
@@ -627,8 +789,8 @@ function TickerTape({ pairs }: { pairs: MarketPair[] }) {
       <div className="ticker-scroll inline-flex gap-6 py-1.5 px-4">
         {items.map((p, i) => (
           <div key={i} className="flex items-center gap-1.5 whitespace-nowrap">
-            <span className="font-mono text-xs text-muted-foreground">{p.symbol.replace("USDT", "")}</span>
-            <span className="font-mono text-xs">{p.price >= 1000 ? p.price.toLocaleString("en-US", { maximumFractionDigits: 0 }) : fmtPrice(p.price)}</span>
+            <span className="font-mono text-xs text-muted-foreground">{p.symbol?.replace("USDT","").replace("-USDT","")}</span>
+            <span className="font-mono text-xs">{p.price >= 1000 ? p.price.toLocaleString("en-US",{maximumFractionDigits:0}) : fp(p.price)}</span>
             <span className={`font-mono text-xs ${p.change >= 0 ? "bull" : "bear"}`}>{p.change >= 0 ? "▲" : "▼"}{Math.abs(p.change).toFixed(2)}%</span>
           </div>
         ))}
@@ -637,25 +799,25 @@ function TickerTape({ pairs }: { pairs: MarketPair[] }) {
   );
 }
 
-// ─── Nav ──────────────────────────────────────────────────────────────────────
+// ─── Nav ─────────────────────────────────────────────────────────────────────
 
 const NAV = [
-  { id: "dashboard", label: "Дашборд", icon: "LayoutDashboard" },
-  { id: "signals", label: "Сигналы", icon: "Zap" },
-  { id: "history", label: "История", icon: "History" },
-  { id: "stats", label: "Статистика", icon: "BarChart2" },
-  { id: "telegram", label: "Telegram", icon: "Bell" },
+  { id: "dashboard", label: "Дашборд",   icon: "LayoutDashboard" },
+  { id: "signals",   label: "Сигналы",   icon: "Zap" },
+  { id: "history",   label: "История",   icon: "History" },
+  { id: "stats",     label: "Статистика",icon: "BarChart2" },
+  { id: "telegram",  label: "Telegram",  icon: "Bell" },
 ];
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function Index() {
-  const [active, setActive] = useState("dashboard");
+  const [active,  setActive]  = useState("dashboard");
   const [signals, setSignals] = useState<PumpSignal[]>([]);
-  const [market, setMarket] = useState<MarketPair[]>([]);
+  const [market,  setMarket]  = useState<MarketPair[]>([]);
   const [loading, setLoading] = useState(false);
   const isMobile = useIsMobile();
-  const scanRef = useRef(false);
+  const scanRef  = useRef(false);
 
   const fetchMarket = useCallback(async () => {
     try {
@@ -670,9 +832,13 @@ export default function Index() {
     scanRef.current = true;
     setLoading(true);
     try {
-      const r = await fetch(`${API_SIGNALS}?action=scan`);
+      const r = await fetch(`${API_SIGNALS}?action=scan&exchange=Binance`);
       const d = await r.json();
-      if (d.signals !== undefined) setSignals(d.signals || []);
+      if (d.signals?.length) setSignals(prev => {
+        const ids = new Set(prev.map(s => s.id));
+        const news = (d.signals as PumpSignal[]).filter(s => !ids.has(s.id));
+        return [...news, ...prev].slice(0, 100);
+      });
     } catch (_e) { /* ignore */ }
     setLoading(false);
     scanRef.current = false;
@@ -689,8 +855,7 @@ export default function Index() {
   useEffect(() => {
     fetchMarket();
     loadSaved();
-    scan();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -701,11 +866,11 @@ export default function Index() {
   const renderSection = () => {
     switch (active) {
       case "dashboard": return <Dashboard signals={signals} loading={loading} onScan={scan} market={market} />;
-      case "signals": return <LiveFeed signals={signals} loading={loading} onScan={scan} />;
-      case "history": return <History />;
-      case "stats": return <StatsSection />;
-      case "telegram": return <TelegramSection />;
-      default: return <Dashboard signals={signals} loading={loading} onScan={scan} market={market} />;
+      case "signals":   return <LiveFeed  signals={signals} loading={loading} onScan={scan} />;
+      case "history":   return <History />;
+      case "stats":     return <StatsSection />;
+      case "telegram":  return <TelegramSection />;
+      default:          return <Dashboard signals={signals} loading={loading} onScan={scan} market={market} />;
     }
   };
 
@@ -714,15 +879,13 @@ export default function Index() {
       {/* Header */}
       <header className="flex items-center justify-between px-3 md:px-4 py-2 border-b border-border shrink-0"
         style={{ background: "hsl(220 13% 7%)" }}>
-        <div className="flex items-center gap-2 md:gap-3">
-          <div className="flex items-center gap-1.5">
-            <span className="text-lg">🚀</span>
-            <span className="font-mono font-bold text-sm tracking-tight">PumpBot</span>
-          </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xl">🚀</span>
+          <span className="font-mono font-bold text-sm">PumpBot</span>
           {!isMobile && (
             <>
-              <div className="w-px h-4 bg-border" />
-              <span className="text-xs text-muted-foreground font-mono">80+ пар · Binance · 15m</span>
+              <div className="w-px h-4 bg-border mx-1" />
+              <span className="text-xs text-muted-foreground font-mono">Binance · Bybit · OKX · MEXC</span>
             </>
           )}
         </div>
@@ -730,21 +893,18 @@ export default function Index() {
           <div className={`flex items-center gap-1.5 text-xs font-mono px-2 py-1 rounded border ${loading ? "border-gold/30 text-gold" : "border-bull/30 text-bull"}`}
             style={{ background: loading ? "hsl(43 96% 56% / 0.05)" : "hsl(158 64% 48% / 0.05)" }}>
             <div className={`w-1.5 h-1.5 rounded-full blink ${loading ? "bg-gold" : "bg-bull"}`} />
-            {!isMobile && <span>{loading ? "сканирую..." : "активен 24/7"}</span>}
+            {!isMobile && <span>{loading ? "сканирую..." : "24/7 активен"}</span>}
           </div>
           <button onClick={() => { fetchMarket(); scan(); }} disabled={loading}
-            className="p-1.5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-foreground transition-colors disabled:opacity-40">
+            className="p-1.5 rounded border border-border text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40">
             <Icon name="RefreshCw" size={12} className={loading ? "animate-spin" : ""} />
           </button>
         </div>
       </header>
 
-      {/* Ticker */}
       <TickerTape pairs={market} />
 
-      {/* Body */}
       <div className={`flex flex-1 ${isMobile ? "flex-col" : "overflow-hidden"}`}>
-        {/* Desktop Sidebar */}
         {!isMobile && (
           <aside className="w-44 border-r border-border shrink-0 flex flex-col" style={{ background: "hsl(var(--sidebar-background))" }}>
             <nav className="flex-1 py-2">
@@ -754,7 +914,7 @@ export default function Index() {
                   <Icon name={item.icon} size={14} />
                   <span className="text-xs font-medium">{item.label}</span>
                   {item.id === "signals" && signals.length > 0 && (
-                    <span className="ml-auto text-xs font-mono bg-primary text-primary-foreground rounded-full w-4 h-4 flex items-center justify-center leading-none">
+                    <span className="ml-auto text-xs font-mono bg-primary text-primary-foreground rounded-full w-4 h-4 flex items-center justify-center">
                       {Math.min(signals.length, 9)}
                     </span>
                   )}
@@ -763,21 +923,20 @@ export default function Index() {
             </nav>
             <div className="border-t border-border p-3">
               <div className="text-xs text-muted-foreground font-mono space-y-1">
-                <div className="flex justify-between"><span>Сигналов:</span><span className="text-foreground">{loading ? "..." : signals.length}</span></div>
-                <div className="flex justify-between"><span>Pump:</span><span className="bull">{signals.filter(s => s.type === "Pump").length}</span></div>
-                <div className="flex justify-between"><span>Dump:</span><span className="bear">{signals.filter(s => s.type === "Dump").length}</span></div>
+                <div className="flex justify-between"><span>Сигналов:</span><span className="text-foreground">{signals.length}</span></div>
+                <div className="flex justify-between"><span>Pump:</span><span className="bull">{signals.filter(s=>s.type==="Pump").length}</span></div>
+                <div className="flex justify-between"><span>Dump:</span><span className="bear">{signals.filter(s=>s.type==="Dump").length}</span></div>
+                <div className="flex justify-between"><span>Банк:</span><span className="text-foreground">$1,000</span></div>
               </div>
             </div>
           </aside>
         )}
 
-        {/* Main Content */}
         <main className={`flex-1 overflow-y-auto p-3 md:p-4 ${isMobile ? "pb-20" : ""}`}>
           {renderSection()}
         </main>
       </div>
 
-      {/* Mobile Bottom Nav */}
       {isMobile && (
         <nav className="fixed bottom-0 left-0 right-0 border-t border-border z-50 flex"
           style={{ background: "hsl(220 13% 7%)" }}>
