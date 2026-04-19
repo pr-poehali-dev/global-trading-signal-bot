@@ -787,17 +787,20 @@ function BotSection() {
 
   const addLog = (msg: string) => setLog(prev => [`[${new Date().toLocaleTimeString("ru")}] ${msg}`, ...prev.slice(0, 29)]);
 
+  const applySettings = (d: any) => {
+    setCfgLeverage(d.leverage  ?? 10);
+    setCfgPosPct(Math.round((d.pos_pct ?? 0.15) * 100));
+    setCfgMaxOpen(d.max_open   ?? 3);
+    setCfgMinScore(d.min_score ?? 70);
+  };
+
   const load = async () => {
     setLoading(true);
     try {
       const r = await fetch(`${API_MEXC_BOT}?action=stats`);
       const d = await r.json();
       setStats(d);
-      // Подтягиваем настройки из stats
-      if (d.leverage)  setCfgLeverage(d.leverage);
-      if (d.pos_pct)   setCfgPosPct(Math.round(d.pos_pct * 100));
-      if (d.max_open)  setCfgMaxOpen(d.max_open);
-      if (d.min_score) setCfgMinScore(d.min_score);
+      applySettings(d);
     } catch { /* ignore */ }
     setLoading(false);
   };
@@ -877,9 +880,17 @@ function BotSection() {
       });
       const d = await r.json();
       if (d.ok) {
-        addLog(`✅ Настройки сохранены: плечо ${cfgLeverage}x, ${cfgPosPct}% депозита, макс ${cfgMaxOpen} позиций, score ≥${cfgMinScore}`);
+        // Сразу применяем ответ сервера — не ждём load()
+        applySettings(d);
+        setStats((prev: any) => prev ? {
+          ...prev,
+          leverage:  d.leverage,
+          pos_pct:   d.pos_pct,
+          max_open:  d.max_open,
+          min_score: d.min_score,
+        } : prev);
+        addLog(`✅ Настройки сохранены: плечо ${d.leverage}x, ${Math.round(d.pos_pct*100)}% депозита, макс ${d.max_open} позиций, score ≥${d.min_score}`);
         setShowSettings(false);
-        await load();
       } else {
         addLog(`❌ Ошибка сохранения настроек`);
       }
@@ -966,7 +977,7 @@ function BotSection() {
             <div className="flex flex-col gap-1.5">
               <label className="text-xs text-muted-foreground">Мин. score сигнала</label>
               <div className="flex gap-1.5 flex-wrap">
-                {[60,65,70,75,80,85,90].map(n => (
+                {[50,55,60,65,70,75,80,85].map(n => (
                   <button key={n} onClick={() => setCfgMinScore(n)}
                     className={`px-2.5 py-1.5 rounded text-xs font-mono font-bold border transition-colors ${cfgMinScore === n ? "border-primary text-primary bg-primary/10" : "border-border text-muted-foreground hover:border-foreground"}`}>
                     {n}
