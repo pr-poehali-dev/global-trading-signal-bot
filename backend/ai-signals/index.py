@@ -31,11 +31,11 @@ HEADERS = {
 }
 SCHEMA       = "t_p73206386_global_trading_signa"
 START_BANK   = 1000.0   # стартовый виртуальный банк
-MIN_SCORE    = 65
-MIN_VOL_USD  = 200_000
-MIN_PRICE_PCT = 2.5
-MIN_RVOL     = 1.8
-COOLDOWN_MIN = 45       # антиспам: одна пара не чаще раза в 45 мин
+MIN_SCORE    = 50
+MIN_VOL_USD  = 30_000   # минимум $30k объёма за свечу 15м
+MIN_PRICE_PCT = 0.8     # движение цены за 45 мин (снижено для боковых рынков)
+MIN_RVOL     = 1.1      # минимальный всплеск объёма
+COOLDOWN_MIN = 30       # антиспам: одна пара не чаще раза в 30 мин
 CLOSE_HOURS  = 4        # закрываем сигнал принудительно через 4 часа
 
 LEVERAGE_MAP = [
@@ -45,6 +45,7 @@ LEVERAGE_MAP = [
     (75,  5, 0.07),
     (70,  3, 0.05),
     (65,  2, 0.03),
+    (55,  1, 0.02),
 ]
 
 EXCHANGE_PAIRS: dict[str, list[str]] = {
@@ -120,26 +121,42 @@ def get_price_now(exchange: str, sym: str) -> float | None:
 # ─── Свечи ────────────────────────────────────────────────────────────────────
 
 def candles_binance(sym: str, n: int = 80) -> list:
+    # c[7] = quoteAssetVolume (уже в USDT) — правильный объём
     d = fetch(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=15m&limit={n}")
     if not isinstance(d, list): return []
-    return [{"o":float(c[1]),"h":float(c[2]),"l":float(c[3]),"c":float(c[4]),"v":float(c[7])} for c in d]
+    return [{"o":float(c[1]),"h":float(c[2]),"l":float(c[3]),"c":float(c[4]),
+             "v":float(c[7]),  # quote volume = USDT
+             "bv":float(c[5]) # base volume = монеты
+            } for c in d]
 
 def candles_bybit(sym: str, n: int = 80) -> list:
+    # c[6] = turnover (USDT), c[5] = volume (монеты)
     d = fetch(f"https://api.bybit.com/v5/market/kline?category=spot&symbol={sym}&interval=15&limit={n}")
     if not isinstance(d, dict) or d.get("retCode") != 0: return []
     rows = list(reversed(d.get("result", {}).get("list", [])))
-    return [{"o":float(c[1]),"h":float(c[2]),"l":float(c[3]),"c":float(c[4]),"v":float(c[6])} for c in rows]
+    return [{"o":float(c[1]),"h":float(c[2]),"l":float(c[3]),"c":float(c[4]),
+             "v":float(c[6]),  # turnover = USDT
+             "bv":float(c[5])
+            } for c in rows]
 
 def candles_okx(sym: str, n: int = 80) -> list:
+    # c[7] = volCcyQuote (USDT)
     d = fetch(f"https://www.okx.com/api/v5/market/candles?instId={sym}&bar=15m&limit={n}")
     if not isinstance(d, dict) or d.get("code") != "0": return []
     rows = list(reversed(d.get("data", [])))
-    return [{"o":float(c[1]),"h":float(c[2]),"l":float(c[3]),"c":float(c[4]),"v":float(c[7])} for c in rows]
+    return [{"o":float(c[1]),"h":float(c[2]),"l":float(c[3]),"c":float(c[4]),
+             "v":float(c[7]) if len(c)>7 else float(c[5])*float(c[4]),
+             "bv":float(c[5])
+            } for c in rows]
 
 def candles_mexc(sym: str, n: int = 80) -> list:
+    # c[7] = quoteAssetVolume (USDT)
     d = fetch(f"https://api.mexc.com/api/v3/klines?symbol={sym}&interval=15m&limit={n}")
     if not isinstance(d, list): return []
-    return [{"o":float(c[1]),"h":float(c[2]),"l":float(c[3]),"c":float(c[4]),"v":float(c[7])} for c in d]
+    return [{"o":float(c[1]),"h":float(c[2]),"l":float(c[3]),"c":float(c[4]),
+             "v":float(c[7]),  # quote volume = USDT
+             "bv":float(c[5])
+            } for c in d]
 
 def get_candles(exchange: str, sym: str) -> list:
     fn = {"Binance": candles_binance, "Bybit": candles_bybit,
@@ -171,9 +188,10 @@ def calc_atr(candles: list, period: int = 14) -> float:
     return sum(trs)/len(trs) if trs else candles[-1]["c"]*0.01
 
 def calc_rvol(candles: list, look: int = 20) -> float:
-    if len(candles) < look+1: return 1.0
-    avg = sum(c["v"] for c in candles[-look-1:-1]) / look
-    return round(candles[-1]["v"]/avg, 2) if avg > 0 else 1.0
+    if len(candles) < look+2: return 1.0
+    # Используем предпоследнюю свечу — последняя ещё не закрыта!
+    avg = sum(c["v"] for c in candles[-look-2:-2]) / look
+    return round(candles[-2]["v"]/avg, 2) if avg > 0 else 1.0
 
 # ─── Многофакторный scoring ───────────────────────────────────────────────────
 
@@ -181,11 +199,12 @@ def score_signal(candles: list) -> dict | None:
     if len(candles) < 25: return None
 
     c = candles
-    price_now = c[-1]["c"]
-    price_1   = c[-2]["c"]
-    price_3   = c[-4]["c"]
-    price_6   = c[-7]["c"]
-    price_12  = c[-13]["c"]
+    # -2 = последняя ЗАКРЫТАЯ свеча, -1 = текущая (ещё формируется)
+    price_now = c[-2]["c"]
+    price_1   = c[-3]["c"]
+    price_3   = c[-5]["c"]
+    price_6   = c[-8]["c"]
+    price_12  = c[-14]["c"]
 
     if price_now <= 0 or price_3 <= 0: return None
 
@@ -195,18 +214,19 @@ def score_signal(candles: list) -> dict | None:
     pct_12 = (price_now - price_12) / price_12 * 100
 
     if abs(pct_3) < MIN_PRICE_PCT and abs(pct_6) < MIN_PRICE_PCT * 1.3:
-        return None
+        return None  # не хватает движения цены
 
     sig_type  = "Pump" if pct_3 >= 0 else "Dump"
     direction = 1 if sig_type == "Pump" else -1
     factors   = []
 
-    # F1: RVOL (0–30 pts)
+    # F1: RVOL (0–30 pts) — не жёсткий фильтр, а баллы
     rv = calc_rvol(c, 20)
-    if rv < MIN_RVOL: return None
-    if rv >= 5.0:   vol_sc = 30; factors.append(f"💥 RVOL {rv:.1f}x — экстремальный объём (топ 1%)")
-    elif rv >= 3.0: vol_sc = 22; factors.append(f"📊 RVOL {rv:.1f}x — сильный всплеск объёма")
-    else:           vol_sc = 12; factors.append(f"📊 RVOL {rv:.1f}x — повышенный объём")
+    if rv >= 5.0:    vol_sc = 30; factors.append(f"💥 RVOL {rv:.1f}x — экстремальный объём (топ 1%)")
+    elif rv >= 3.0:  vol_sc = 22; factors.append(f"📊 RVOL {rv:.1f}x — сильный всплеск объёма")
+    elif rv >= 1.5:  vol_sc = 15; factors.append(f"📊 RVOL {rv:.1f}x — повышенный объём")
+    elif rv >= MIN_RVOL: vol_sc = 8; factors.append(f"📊 RVOL {rv:.1f}x — чуть выше нормы")
+    else:            vol_sc = 0   # нет всплеска — 0 баллов, но не блокируем
 
     # F2: Движение цены (0–25 pts)
     abs3 = abs(pct_3)
@@ -255,14 +275,14 @@ def score_signal(candles: list) -> dict | None:
     elif sig_type == "Dump" and price_now < ema20:
         ema_sc = 3; factors.append("📐 Цена ниже EMA20 — краткосрочный тренд вниз")
 
-    # F7: Нарастающий объём (0–5 pts)
+    # F7: Нарастающий объём (0–5 pts) — по закрытым свечам
     vol_trend_sc = 0
-    vols = [x["v"] for x in c[-4:]]
+    vols = [x["v"] for x in c[-5:-1]]  # 4 закрытых свечи
     if len(vols) == 4 and vols[-1] > vols[-2] > vols[-3]:
         vol_trend_sc = 5; factors.append("📦 Объём нарастает 3 свечи подряд — устойчивый поток")
 
-    # Объём в $
-    vol_usd = c[-1]["v"]
+    # Объём в USDT (quote volume — уже в USD, берём закрытую свечу)
+    vol_usd = c[-2]["v"]
     if vol_usd < MIN_VOL_USD: return None
 
     total = vol_sc + price_sc + accel_sc + engulf_sc + rsi_sc + ema_sc + vol_trend_sc
@@ -858,7 +878,12 @@ def run_scan(only_exchange: str | None = None) -> dict:
         for sym in pairs:
             try:
                 candles = get_candles(exchange, sym)
+                if not candles:
+                    errors += 1
+                    continue
                 scored  = score_signal(candles)
+                if scored:
+                    print(f"[SIGNAL] {exchange} {sym} score={scored['score']} pct3={scored['pct_3']:.2f}% rvol={scored['rvol']}")
                 if not scored: continue
 
                 pair = sym.replace("-","/").replace("USDT","/USDT")
@@ -910,6 +935,34 @@ def handler(event: dict, context) -> dict:
     if action == "close":
         auto_close_signals()
         return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"ok": True})}
+
+    if action == "debug":
+        # Диагностика — проверяем несколько монет и показываем почему не сигнал
+        sym = params.get("sym", "SOLUSDT")
+        exchange = params.get("exchange", "Binance")
+        candles = get_candles(exchange, sym)
+        if not candles:
+            return {"statusCode": 200, "headers": HEADERS,
+                    "body": json.dumps({"error": "no candles", "sym": sym})}
+        c = candles
+        pn = c[-1]["c"]; p3 = c[-4]["c"]; p6 = c[-7]["c"]
+        pct3 = (pn-p3)/p3*100; pct6 = (pn-p6)/p6*100
+        rv = calc_rvol(c, 20)
+        vol_usd = c[-1]["v"] * pn
+        rsi = calc_rsi([x["c"] for x in c])
+        scored = score_signal(candles)
+        return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({
+            "sym": sym, "exchange": exchange,
+            "price": pn, "candles_count": len(candles),
+            "pct_3": round(pct3,4), "pct_6": round(pct6,4),
+            "rvol": rv, "vol_usd": round(vol_usd,2), "rsi": rsi,
+            "min_price_pct": MIN_PRICE_PCT, "min_rvol": MIN_RVOL,
+            "min_vol_usd": MIN_VOL_USD, "min_score": MIN_SCORE,
+            "pass_price": abs(pct3) >= MIN_PRICE_PCT or abs(pct6) >= MIN_PRICE_PCT*1.3,
+            "pass_rvol":  rv >= MIN_RVOL,
+            "pass_vol":   vol_usd >= MIN_VOL_USD,
+            "signal": scored,
+        })}
 
     if action == "test_telegram":
         p = get_portfolio()
