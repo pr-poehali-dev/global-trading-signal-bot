@@ -316,7 +316,7 @@ def db_get_new_signals() -> list:
                 tp1_pct,tp2_pct,sl_pct,
                 confidence,factors_json
             FROM {SCHEMA}.signals
-            WHERE sentiment IN ('Pump','Dump')
+            WHERE signal_type IN ('LONG','SHORT')
               AND status='active'
               AND confidence >= %s
               AND created_at > NOW() - INTERVAL '10 minutes'
@@ -569,77 +569,63 @@ def open_new_positions(balance: float) -> int:
 
 def run_test_trade() -> dict:
     """
-    Тест подключения и торговли:
-    1. Проверяем баланс
-    2. Если баланс < $5 — пробуем перевести $10 со спота
-    3. Открываем LONG DOGE_USDT минимальным объёмом (1 контракт = ~$0.07)
-    4. Сразу закрываем
-    5. Выводим подробный лог
+    Тест: открываем LONG DOGE_USDT (1 контракт), ВСЕГДА закрываем через finally.
+    Цель: убедиться что auth + ордера работают корректно.
     """
     log    = []
     symbol = "DOGE_USDT"
+    vol    = 1
+    opened = False
 
-    # 1. Баланс фьючерсов
+    # 1. Баланс
     bal = get_futures_balance()
     log.append(f"{'✅' if bal > 0.01 else '⚠️'} Баланс фьючерсов: ${bal:.4f} USDT")
 
-    # 2. Если мало — пробуем перевести со спота
-    if bal < 5.0:
-        log.append("⚠️ Баланс фьючерсов пуст — проверяю доступ к API...")
-        # Проверяем: может ли аккаунт вообще торговать фьючерсами
-        acc_check = mexc_get("/private/account/asset/USDT")
-        log.append(f"Ответ аккаунта: {json.dumps(acc_check)[:200]}")
-        if not acc_check.get("success"):
-            code = acc_check.get("code", "?")
-            msg  = acc_check.get("message", "")
-            if code in (10003, 2021, "10003", "2021") or "permission" in msg.lower() or "institutional" in msg.lower():
-                log.append("❌ ПРИЧИНА: Фьючерсный API на MEXC доступен только для institutional-аккаунтов")
-                log.append("👉 Решение: написать institution@mexc.com для получения доступа")
-                log.append("👉 Альтернатива: пополни фьючерсный счёт вручную (Активы → Перевод → Фьючерсы)")
-            return {"ok": False, "log": log, "balance": bal, "need_futures_access": True}
-        log.append("👉 Пополни фьючерсный счёт: MEXC → Активы → Перевести → Фьючерсы → минимум $10")
-
     if bal < 0.01:
-        log.append("❌ Недостаточно баланса даже после попытки перевода")
-        log.append("👉 Пополни фьючерсный счёт MEXC вручную: Активы → Фьючерсы → Перевод")
+        log.append("❌ Фьючерсный счёт пуст")
+        log.append("👉 MEXC → Активы → Перевод → Фьючерсы → минимум $10 USDT")
         return {"ok": False, "log": log, "balance": bal}
 
-    # 3. Цена DOGE
+    # 2. Цена DOGE
     price = get_price(symbol)
     if not price:
         log.append("❌ Не удалось получить цену DOGE_USDT")
         return {"ok": False, "log": log}
     log.append(f"✅ Цена DOGE: ${price:.5f}")
 
-    # Минимальный объём — 1 контракт DOGE (~$0.07 без плеча)
-    vol       = 1
-    needed    = round(vol * price / LEVERAGE, 4)
-    log.append(f"📊 Маржа для 1 конт. × {LEVERAGE}x: ${needed:.4f} USDT")
+    needed = round(vol * price / LEVERAGE, 6)
+    log.append(f"📊 Нужна маржа: ${needed:.4f} USDT (1 конт. × {LEVERAGE}x)")
 
     if bal < needed:
-        log.append(f"❌ Недостаточно маржи: нужно ${needed:.4f}, есть ${bal:.4f}")
+        log.append(f"❌ Мало маржи: нужно ${needed:.4f}, есть ${bal:.4f}")
         return {"ok": False, "log": log, "balance": bal}
 
-    # 4. Открываем LONG
-    log.append(f"→ Открываю LONG {symbol} × {vol} конт. × {LEVERAGE}x...")
-    order_r = place_order(symbol, 1, vol, LEVERAGE)
-    order_ok = order_r.get("success", False)
-    order_msg = order_r.get("message") or order_r.get("data") or str(order_r)[:150]
-    log.append(f"{'✅' if order_ok else '❌'} Открытие: {order_msg}")
-
-    if not order_ok:
-        log.append(f"Raw response: {json.dumps(order_r)[:300]}")
-        tg(f"🧪 <b>MEXC Тест</b>\n" + "\n".join(log) + "\n\n❌ ОШИБКА открытия")
-        return {"ok": False, "log": log, "balance": bal}
-
-    time.sleep(2)
-
-    # 5. Сразу закрываем
-    log.append(f"→ Закрываю позицию...")
-    close_r  = place_order(symbol, 2, vol, LEVERAGE)
-    close_ok = close_r.get("success", False)
-    close_msg = close_r.get("message") or close_r.get("data") or str(close_r)[:150]
-    log.append(f"{'✅' if close_ok else '⚠️'} Закрытие: {close_msg}")
+    order_ok = False
+    try:
+        # 3. Открываем LONG
+        log.append(f"→ Открываю LONG {symbol} × {vol} конт. × {LEVERAGE}x...")
+        order_r   = place_order(symbol, 1, vol, LEVERAGE)
+        order_ok  = order_r.get("success", False)
+        order_msg = order_r.get("message") or str(order_r.get("data", ""))[:120] or str(order_r)[:120]
+        log.append(f"{'✅' if order_ok else '❌'} Открытие: {order_msg}")
+        if order_ok:
+            opened = True
+        else:
+            log.append(f"Raw: {json.dumps(order_r)[:250]}")
+    finally:
+        # 4. ВСЕГДА закрываем — даже если что-то пошло не так
+        if opened:
+            time.sleep(1)
+            log.append("→ Закрываю позицию...")
+            close_r   = place_order(symbol, 2, vol, LEVERAGE)
+            close_ok  = close_r.get("success", False)
+            close_msg = close_r.get("message") or str(close_r.get("data", ""))[:120] or str(close_r)[:120]
+            log.append(f"{'✅' if close_ok else '⚠️'} Закрытие: {close_msg}")
+            if not close_ok:
+                # Повторная попытка закрытия через 2 сек
+                time.sleep(2)
+                retry = place_order(symbol, 2, vol, LEVERAGE)
+                log.append(f"{'✅' if retry.get('success') else '❌'} Повтор закрытия: {retry.get('message','')[:80]}")
 
     # Итог
     ok = order_ok

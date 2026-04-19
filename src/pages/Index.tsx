@@ -412,11 +412,12 @@ function LiveFeed({ signals, loading, onScan }: {
               </button>
             ))}
           </div>
-          <button onClick={onScan} disabled={loading}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-primary text-primary hover:bg-primary/10 transition-colors disabled:opacity-40 font-mono">
-            <Icon name="RefreshCw" size={11} className={loading ? "animate-spin" : ""} />
-            Сканировать
-          </button>
+          {loading && (
+            <span className="text-xs text-muted-foreground font-mono flex items-center gap-1">
+              <div className="w-2 h-2 border border-current border-t-transparent rounded-full animate-spin" />
+              авто-скан
+            </span>
+          )}
         </div>
       </div>
 
@@ -439,10 +440,10 @@ function LiveFeed({ signals, loading, onScan }: {
           <div className="text-xs text-center max-w-xs opacity-60">
             Бот сканирует 150+ пар каждые 5 минут. Сигнал появится при обнаружении аномальной активности.
           </div>
-          <button onClick={onScan}
-            className="mt-1 text-xs px-4 py-2 rounded border border-primary text-primary hover:bg-primary/10 font-mono transition-colors">
-            Запустить сканирование
-          </button>
+          <div className="text-xs font-mono text-muted-foreground flex items-center gap-1.5 mt-1">
+            <div className="w-2 h-2 rounded-full bg-bull blink" />
+            Авто-скан каждые 5 минут
+          </div>
         </div>
       ) : (
         <div className="flex flex-col gap-3">
@@ -1154,11 +1155,12 @@ function Dashboard({ signals, loading, onScan, market }: {
             <span className="text-xs font-mono">{e}</span>
           </div>
         ))}
-        <button onClick={onScan} disabled={loading}
-          className="ml-auto text-xs font-mono px-3 py-1 rounded border border-primary/40 text-primary hover:bg-primary/10 transition-colors disabled:opacity-40 flex items-center gap-1.5">
-          <Icon name="RefreshCw" size={10} className={loading ? "animate-spin" : ""} />
-          {loading ? "Сканирую..." : "Скан"}
-        </button>
+        <div className="ml-auto flex items-center gap-1.5 text-xs font-mono text-muted-foreground">
+          {loading
+            ? <><div className="w-2 h-2 border border-current border-t-transparent rounded-full animate-spin" /> скан...</>
+            : <><div className="w-2 h-2 rounded-full bg-bull blink" /> авто</>
+          }
+        </div>
       </div>
     </div>
   );
@@ -1241,6 +1243,7 @@ export default function Index() {
   useEffect(() => {
     fetchMarket();
     loadSaved();
+    scan(); // автостарт сразу при открытии
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

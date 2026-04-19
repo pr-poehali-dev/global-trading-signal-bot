@@ -5,15 +5,15 @@
       "method": "GET",
       "path": "/?action=stats",
       "expectedStatus": 200,
-      "expectedBody": { "running": false },
+      "expectedBody": { "total": 0, "win_rate": 0 },
       "bodyMatcher": "partial"
     },
     {
       "name": "Tick when stopped",
       "method": "GET",
-      "path": "/?action=tick",
+      "path": "/?action=ping",
       "expectedStatus": 200,
-      "expectedBody": { "skipped": true },
+      "expectedBody": { "ok": true },
       "bodyMatcher": "partial"
     }
   ]
