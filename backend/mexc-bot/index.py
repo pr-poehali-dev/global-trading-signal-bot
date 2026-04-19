@@ -35,6 +35,7 @@ HEADERS_RESP = {
     "Content-Type": "application/json",
 }
 SCHEMA    = "t_p73206386_global_trading_signa"
+# Дефолты (берутся из DB при каждом тике)
 LEVERAGE  = 10
 POS_PCT   = 0.15
 MAX_OPEN  = 3
@@ -167,21 +168,36 @@ def transfer_to_futures(amount: float) -> dict:
         "transferType": 1,   # 1 = spot → futures
     })
 
-def get_open_positions_api(symbol: str) -> list:
-    """Открытые позиции по символу."""
-    r = mexc_get("/private/position/open_positions", {"symbol": symbol})
+def get_open_positions_api(symbol: str | None = None) -> list:
+    """Реальные открытые позиции на MEXC (опционально по символу)."""
+    params = {"symbol": symbol} if symbol else {}
+    r = mexc_get("/private/position/open_positions", params)
     if r.get("success"):
         return r.get("data") or []
     return []
 
 def close_position_api(symbol: str, direction: str, vol: float) -> dict:
+    """Закрыть позицию — сначала смотрим реальный объём из API."""
+    # Получаем реальные позиции по этому символу
+    positions = get_open_positions_api(symbol)
+    real_vol = 0.0
+    for p in positions:
+        if p.get("symbol") == symbol:
+            hold_vol = float(p.get("holdVol", 0) or 0)
+            if hold_vol > 0:
+                real_vol = hold_vol
+                break
+    # Если позиции нет на бирже — ничего не делаем
+    if real_vol <= 0:
+        return {"success": True, "skipped": True, "reason": "no open position on exchange"}
+    # Закрываем реальный объём
     side = 2 if direction == "LONG" else 4  # 2=close_long, 4=close_short
     return mexc_post("/private/order/submit", {
         "symbol":   symbol,
         "side":     side,
         "openType": 1,
         "type":     6,
-        "vol":      vol,
+        "vol":      real_vol,
         "leverage": LEVERAGE,
     })
 
@@ -211,10 +227,32 @@ def get_bot_state() -> dict:
         cur.execute(f"SELECT is_running, leverage, position_pct, balance_usdt FROM {SCHEMA}.mexc_bot_state LIMIT 1")
         r = cur.fetchone()
         cur.close(); conn.close()
-        return {"running": bool(r[0]), "leverage": r[1] or LEVERAGE,
-                "pos_pct": float(r[2] or POS_PCT), "balance": float(r[3] or 0)} if r else {"running": False}
+        if r:
+            return {
+                "running":   bool(r[0]),
+                "leverage":  int(r[1] or LEVERAGE),
+                "pos_pct":   float(r[2] or POS_PCT),
+                "balance":   float(r[3] or 0),
+                "max_open":  MAX_OPEN,
+                "min_score": MIN_SCORE,
+                "timeout_h": TIMEOUT_H,
+            }
+        return {"running": False}
     except Exception:
         return {"running": False}
+
+def save_settings(leverage: int, pos_pct: float, max_open: int, min_score: int) -> bool:
+    """Сохранить настройки бота в БД."""
+    try:
+        conn = db_conn(); cur = conn.cursor()
+        cur.execute(
+            f"UPDATE {SCHEMA}.mexc_bot_state SET leverage=%s, position_pct=%s, updated_at=NOW()",
+            (leverage, pos_pct)
+        )
+        conn.commit(); cur.close(); conn.close()
+        return True
+    except Exception:
+        return False
 
 def set_running(val: bool):
     try:
@@ -392,6 +430,13 @@ def db_get_stats() -> dict:
         return {
             "running":   state["running"],
             "balance":   state["balance"],
+            # Настройки — из DB
+            "leverage":  state.get("leverage",  LEVERAGE),
+            "pos_pct":   state.get("pos_pct",   POS_PCT),
+            "max_open":  state.get("max_open",  MAX_OPEN),
+            "min_score": state.get("min_score", MIN_SCORE),
+            "timeout_h": state.get("timeout_h", TIMEOUT_H),
+            # Статистика
             "total":     r[0] or 0,
             "wins":      wins, "losses": losses,
             "open":      r[3] or 0, "closed": closed,
@@ -404,6 +449,7 @@ def db_get_stats() -> dict:
         }
     except Exception as e:
         return {"running":False,"balance":0,"total":0,"wins":0,"losses":0,
+                "leverage":LEVERAGE,"pos_pct":POS_PCT,"max_open":MAX_OPEN,"min_score":MIN_SCORE,
                 "open":0,"closed":0,"win_rate":0,"total_pnl":0,
                 "avg_win":0,"avg_loss":0,"open_trades":[],"history":[],"error":str(e)}
 
@@ -613,19 +659,24 @@ def run_test_trade() -> dict:
         else:
             log.append(f"Raw: {json.dumps(order_r)[:250]}")
     finally:
-        # 4. ВСЕГДА закрываем — даже если что-то пошло не так
+        # 4. Закрываем через реальные позиции API — надёжно
         if opened:
-            time.sleep(1)
-            log.append("→ Закрываю позицию...")
-            close_r   = place_order(symbol, 2, vol, LEVERAGE)
-            close_ok  = close_r.get("success", False)
-            close_msg = close_r.get("message") or str(close_r.get("data", ""))[:120] or str(close_r)[:120]
-            log.append(f"{'✅' if close_ok else '⚠️'} Закрытие: {close_msg}")
-            if not close_ok:
-                # Повторная попытка закрытия через 2 сек
-                time.sleep(2)
-                retry = place_order(symbol, 2, vol, LEVERAGE)
-                log.append(f"{'✅' if retry.get('success') else '❌'} Повтор закрытия: {retry.get('message','')[:80]}")
+            time.sleep(2)  # ждём пока ордер исполнится
+            log.append("→ Проверяю реальную позицию на MEXC...")
+            positions = get_open_positions_api(symbol)
+            real_vol  = 0.0
+            for p in positions:
+                if p.get("symbol") == symbol:
+                    real_vol = float(p.get("holdVol", 0) or 0)
+                    break
+            if real_vol > 0:
+                log.append(f"→ Закрываю позицию {real_vol} конт...")
+                close_r  = place_order(symbol, 2, real_vol, LEVERAGE)
+                close_ok = close_r.get("success", False)
+                close_msg = close_r.get("message") or str(close_r.get("data", ""))[:100] or str(close_r)[:100]
+                log.append(f"{'✅' if close_ok else '⚠️'} Закрытие: {close_msg}")
+            else:
+                log.append("✅ Позиция уже закрыта биржей (исполнилась)")
 
     # Итог
     ok = order_ok
@@ -643,9 +694,16 @@ def run_test_trade() -> dict:
 # ─── Основной тик ─────────────────────────────────────────────────────────────
 
 def run_tick() -> dict:
+    global LEVERAGE, POS_PCT, MAX_OPEN, MIN_SCORE
     state = get_bot_state()
     if not state["running"]:
         return {"skipped": True, "reason": "bot is stopped"}
+
+    # Применяем настройки из БД
+    LEVERAGE  = state.get("leverage",  LEVERAGE)
+    POS_PCT   = state.get("pos_pct",   POS_PCT)
+    MAX_OPEN  = state.get("max_open",  MAX_OPEN)
+    MIN_SCORE = state.get("min_score", MIN_SCORE)
 
     bal = get_futures_balance()
     if bal > 0:
@@ -718,11 +776,49 @@ def handler(event: dict, context) -> dict:
                 "body": json.dumps({"balance": bal})}
 
     if action == "ping":
-        # Проверка подключения без торговли
         bal   = get_futures_balance()
         price = get_price("BTC_USDT")
         return {"statusCode": 200, "headers": HEADERS_RESP,
                 "body": json.dumps({"ok": True, "balance": bal, "btc_price": price})}
+
+    if action == "settings":
+        # GET — вернуть текущие настройки
+        if event.get("httpMethod") == "GET":
+            state = get_bot_state()
+            return {"statusCode": 200, "headers": HEADERS_RESP,
+                    "body": json.dumps(state)}
+        # POST — сохранить настройки
+        try:
+            body = json.loads(event.get("body") or "{}")
+        except Exception:
+            body = params  # fallback: из query params
+
+        lev       = int(body.get("leverage",  params.get("leverage",  LEVERAGE)))
+        pos_pct   = float(body.get("pos_pct", params.get("pos_pct",  POS_PCT)))
+        max_open  = int(body.get("max_open",  params.get("max_open",  MAX_OPEN)))
+        min_score = int(body.get("min_score", params.get("min_score", MIN_SCORE)))
+
+        # Валидация
+        lev       = max(1, min(125, lev))
+        pos_pct   = max(0.01, min(0.99, pos_pct))
+        max_open  = max(1, min(10, max_open))
+        min_score = max(50, min(100, min_score))
+
+        ok = save_settings(lev, pos_pct, max_open, min_score)
+        if ok:
+            tg(
+                f"⚙️ <b>MEXC Бот — настройки обновлены</b>\n"
+                f"🔥 Плечо: <b>{lev}x</b>\n"
+                f"📊 На сделку: <b>{round(pos_pct*100)}%</b>\n"
+                f"🔁 Макс позиций: <b>{max_open}</b>\n"
+                f"🎯 Мин. score: <b>{min_score}/100</b>"
+            )
+        return {"statusCode": 200, "headers": HEADERS_RESP,
+                "body": json.dumps({
+                    "ok": ok,
+                    "leverage": lev, "pos_pct": pos_pct,
+                    "max_open": max_open, "min_score": min_score,
+                })}
 
     # stats (default)
     return {"statusCode": 200, "headers": HEADERS_RESP,

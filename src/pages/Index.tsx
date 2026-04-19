@@ -773,12 +773,19 @@ function TelegramSection() {
 // ─── MEXC Bot Section ─────────────────────────────────────────────────────────
 
 function BotSection() {
-  const [stats, setStats]       = useState<any>(null);
-  const [loading, setLoading]   = useState(true);
-  const [acting, setActing]     = useState(false);
-  const [log, setLog]           = useState<string[]>([]);
+  const [stats, setStats]         = useState<any>(null);
+  const [loading, setLoading]     = useState(true);
+  const [acting, setActing]       = useState(false);
+  const [log, setLog]             = useState<string[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
+  const [saving, setSaving]       = useState(false);
+  // Форма настроек
+  const [cfgLeverage,  setCfgLeverage]  = useState(10);
+  const [cfgPosPct,    setCfgPosPct]    = useState(15);   // %
+  const [cfgMaxOpen,   setCfgMaxOpen]   = useState(3);
+  const [cfgMinScore,  setCfgMinScore]  = useState(70);
 
-  const addLog = (msg: string) => setLog(prev => [`[${new Date().toLocaleTimeString("ru")}] ${msg}`, ...prev.slice(0, 19)]);
+  const addLog = (msg: string) => setLog(prev => [`[${new Date().toLocaleTimeString("ru")}] ${msg}`, ...prev.slice(0, 29)]);
 
   const load = async () => {
     setLoading(true);
@@ -786,6 +793,11 @@ function BotSection() {
       const r = await fetch(`${API_MEXC_BOT}?action=stats`);
       const d = await r.json();
       setStats(d);
+      // Подтягиваем настройки из stats
+      if (d.leverage)  setCfgLeverage(d.leverage);
+      if (d.pos_pct)   setCfgPosPct(Math.round(d.pos_pct * 100));
+      if (d.max_open)  setCfgMaxOpen(d.max_open);
+      if (d.min_score) setCfgMinScore(d.min_score);
     } catch { /* ignore */ }
     setLoading(false);
   };
@@ -849,6 +861,32 @@ function BotSection() {
     setActing(false);
   };
 
+  const handleSaveSettings = async () => {
+    setSaving(true);
+    try {
+      const body = {
+        leverage:  cfgLeverage,
+        pos_pct:   cfgPosPct / 100,
+        max_open:  cfgMaxOpen,
+        min_score: cfgMinScore,
+      };
+      const r = await fetch(`${API_MEXC_BOT}?action=settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        addLog(`✅ Настройки сохранены: плечо ${cfgLeverage}x, ${cfgPosPct}% депозита, макс ${cfgMaxOpen} позиций, score ≥${cfgMinScore}`);
+        setShowSettings(false);
+        await load();
+      } else {
+        addLog(`❌ Ошибка сохранения настроек`);
+      }
+    } catch { addLog("❌ Нет соединения"); }
+    setSaving(false);
+  };
+
   const isRunning  = stats?.running || false;
   const openTrades = stats?.open_trades || [];
   const history    = stats?.history || [];
@@ -859,10 +897,119 @@ function BotSection() {
     <div className="flex flex-col gap-4 fade-in">
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold">MEXC Авто-Бот</span>
-        <button onClick={load} className="p-1 rounded border border-border text-muted-foreground hover:text-foreground transition-colors">
-          <Icon name="RefreshCw" size={11} className={loading ? "animate-spin" : ""} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowSettings(s => !s)}
+            className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded border transition-colors font-mono ${showSettings ? "border-primary text-primary bg-primary/5" : "border-border text-muted-foreground hover:text-foreground"}`}>
+            <Icon name="Settings2" size={12} />
+            Настройки
+          </button>
+          <button onClick={load} className="p-1.5 rounded border border-border text-muted-foreground hover:text-foreground transition-colors">
+            <Icon name="RefreshCw" size={11} className={loading ? "animate-spin" : ""} />
+          </button>
+        </div>
       </div>
+
+      {/* ─── Форма настроек ─── */}
+      {showSettings && (
+        <div className="rounded-lg border p-4 flex flex-col gap-4"
+          style={{ background: "hsl(220 13% 10%)", borderColor: "hsl(220 13% 22%)" }}>
+          <div className="text-xs font-semibold text-foreground flex items-center gap-2">
+            <Icon name="Settings2" size={13} />
+            Параметры торговли
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            {/* Плечо */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground">Плечо (leverage)</label>
+              <div className="flex items-center gap-2">
+                <input type="range" min={1} max={100} step={1}
+                  value={cfgLeverage}
+                  onChange={e => setCfgLeverage(Number(e.target.value))}
+                  className="flex-1 accent-primary h-1.5 rounded cursor-pointer" />
+                <span className="font-mono font-bold text-sm w-10 text-right">{cfgLeverage}x</span>
+              </div>
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>1x</span><span>25x</span><span>50x</span><span>100x</span>
+              </div>
+            </div>
+
+            {/* % депозита */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground">% депозита на сделку</label>
+              <div className="flex items-center gap-2">
+                <input type="range" min={1} max={50} step={1}
+                  value={cfgPosPct}
+                  onChange={e => setCfgPosPct(Number(e.target.value))}
+                  className="flex-1 accent-primary h-1.5 rounded cursor-pointer" />
+                <span className="font-mono font-bold text-sm w-10 text-right">{cfgPosPct}%</span>
+              </div>
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>1%</span><span>10%</span><span>25%</span><span>50%</span>
+              </div>
+            </div>
+
+            {/* Макс позиций */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground">Макс. одновременных позиций</label>
+              <div className="flex gap-1.5 flex-wrap">
+                {[1,2,3,4,5,6].map(n => (
+                  <button key={n} onClick={() => setCfgMaxOpen(n)}
+                    className={`px-3 py-1.5 rounded text-xs font-mono font-bold border transition-colors ${cfgMaxOpen === n ? "border-primary text-primary bg-primary/10" : "border-border text-muted-foreground hover:border-foreground"}`}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Мин. score */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground">Мин. score сигнала</label>
+              <div className="flex gap-1.5 flex-wrap">
+                {[60,65,70,75,80,85,90].map(n => (
+                  <button key={n} onClick={() => setCfgMinScore(n)}
+                    className={`px-2.5 py-1.5 rounded text-xs font-mono font-bold border transition-colors ${cfgMinScore === n ? "border-primary text-primary bg-primary/10" : "border-border text-muted-foreground hover:border-foreground"}`}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Превью настроек */}
+          <div className="rounded p-3 text-xs font-mono flex flex-wrap gap-4"
+            style={{ background: "hsl(220 13% 7%)" }}>
+            {stats?.balance > 0 && (
+              <span className="text-muted-foreground">
+                На сделку: <span className="text-foreground font-bold">
+                  ${(stats.balance * cfgPosPct / 100).toFixed(0)} USDT
+                  → экспозиция ${(stats.balance * cfgPosPct / 100 * cfgLeverage).toFixed(0)} USDT
+                </span>
+              </span>
+            )}
+            <span className="text-muted-foreground">
+              Риск/сделку: <span className={`font-bold ${cfgPosPct * cfgLeverage > 100 ? "bear" : cfgPosPct * cfgLeverage > 50 ? "text-yellow-400" : "bull"}`}>
+                {cfgPosPct}% × {cfgLeverage}x = {cfgPosPct * cfgLeverage}% баланса
+              </span>
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button onClick={handleSaveSettings} disabled={saving}
+              className="flex items-center gap-2 px-5 py-2 rounded-lg font-semibold text-sm transition-all disabled:opacity-50"
+              style={{ background: "hsl(158 64% 48%)", color: "hsl(220 13% 8%)" }}>
+              {saving
+                ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                : <Icon name="Save" size={14} />}
+              Сохранить
+            </button>
+            <button onClick={() => setShowSettings(false)}
+              className="px-4 py-2 rounded-lg text-sm border border-border text-muted-foreground hover:text-foreground transition-colors">
+              Отмена
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Главная кнопка запуска */}
       <div className="rounded-lg border p-5 flex flex-col gap-4"
@@ -880,7 +1027,7 @@ function BotSection() {
                 {isRunning ? "Бот работает 🟢" : "Бот остановлен 🔴"}
               </div>
               <div className="text-xs text-muted-foreground font-mono">
-                MEXC Futures · 10x · 15% депозита · до 3 позиций
+                MEXC Futures · {stats?.leverage ?? 10}x · {Math.round((stats?.pos_pct ?? 0.15) * 100)}% депозита · до {stats?.max_open ?? 3} позиций
               </div>
             </div>
           </div>
@@ -914,13 +1061,13 @@ function BotSection() {
           </div>
         </div>
 
-        {/* Параметры бота */}
+        {/* Параметры бота — реальные значения */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {[
-            { label: "Биржа",    val: "MEXC Futures" },
-            { label: "Плечо",    val: "10x" },
-            { label: "На сделку",val: "15% депозита" },
-            { label: "Таймаут",  val: "4 часа" },
+            { label: "Биржа",       val: "MEXC Futures" },
+            { label: "Плечо",       val: `${stats?.leverage ?? 10}x` },
+            { label: "На сделку",   val: `${Math.round((stats?.pos_pct ?? 0.15) * 100)}% депозита` },
+            { label: "Макс позиций",val: `${stats?.max_open ?? 3} одновременно` },
           ].map((m, i) => (
             <div key={i} className="rounded p-2 text-center" style={{ background: "hsl(220 13% 8%)" }}>
               <div className="text-xs text-muted-foreground">{m.label}</div>
